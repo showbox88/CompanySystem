@@ -14,6 +14,9 @@ class TaskStatus(str, Enum):
 class AgentBase(BaseModel):
     name: str
     role: str
+    job_title: Optional[str] = None
+    department: Optional[str] = None
+    level: Optional[str] = None
     description: Optional[str] = None
     system_prompt: str
     model_name: str = "gpt-4-turbo"
@@ -38,11 +41,37 @@ class SettingBase(BaseModel):
 class AgentCreate(AgentBase):
     pass
 
+class AgentUpdate(BaseModel):
+    name: Optional[str] = None
+    role: Optional[str] = None
+    job_title: Optional[str] = None
+    department: Optional[str] = None
+    level: Optional[str] = None
+    description: Optional[str] = None
+    system_prompt: Optional[str] = None
+    model_name: Optional[str] = None
+    temperature: Optional[float] = None
+    avatar: Optional[str] = None
+
 class SkillCreate(SkillBase):
     pass
 
 class TaskCreate(TaskBase):
     pass
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+    name: Optional[str] = None
+
+class ChatRequest(BaseModel):
+    agent_id: str
+    message: str
+    history: List[ChatMessage] = []
+    force_execution: bool = False  # New field for delegated tasks
+
+class ChatResponse(BaseModel):
+    response: str
 
 class SettingCreate(SettingBase):
     pass
@@ -74,5 +103,20 @@ class Task(TaskBase):
         from_attributes = True
 
 class Setting(SettingBase):
+    class Config:
+        from_attributes = True
+
+class LogCreate(BaseModel):
+    agent_id: Optional[str] = None
+    event_type: str
+    content: str
+
+class SystemLog(BaseModel):
+    id: str
+    agent_id: Optional[str]
+    event_type: str
+    content: str
+    timestamp: datetime
+
     class Config:
         from_attributes = True

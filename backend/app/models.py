@@ -27,6 +27,9 @@ class Agent(Base):
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     name = Column(String, index=True)
     role = Column(String)
+    job_title = Column(String, nullable=True) # 职称
+    department = Column(String, nullable=True) # 部门
+    level = Column(String, nullable=True) # 等级
     avatar = Column(String, nullable=True)
     description = Column(Text, nullable=True)
     system_prompt = Column(Text)
@@ -71,3 +74,14 @@ class Setting(Base):
     # We only need one row, using key as PK
     key = Column(String, primary_key=True, index=True) 
     value = Column(String, nullable=True)
+
+class SystemLog(Base):
+    __tablename__ = "system_logs"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    agent_id = Column(String, ForeignKey("agents.id"), nullable=True)
+    event_type = Column(String) 
+    content = Column(Text)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+
+    agent = relationship("Agent")
