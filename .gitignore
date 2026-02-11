@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Database
+*.db
+
+# Outputs (Optional: keep outputs or not? Usually ignore generated content)
+outputs/*
+!outputs/.gitkeep
+
+# IDE
+.vscode/
+.idea/
