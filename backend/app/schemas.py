@@ -25,6 +25,7 @@ class AgentBase(BaseModel):
 
 class SkillBase(BaseModel):
     name: str
+    display_name: Optional[str] = None
     category: Optional[str] = None
     description: Optional[str] = None
 
@@ -39,7 +40,7 @@ class SettingBase(BaseModel):
 
 # --- Creation Models (Input) ---
 class AgentCreate(AgentBase):
-    pass
+    skills: Optional[List[str]] = [] # List of Skill IDs
 
 class AgentUpdate(BaseModel):
     name: Optional[str] = None
@@ -52,6 +53,7 @@ class AgentUpdate(BaseModel):
     model_name: Optional[str] = None
     temperature: Optional[float] = None
     avatar: Optional[str] = None
+    skills: Optional[List[str]] = None # List of Skill IDs to Replace existing
 
 class SkillCreate(SkillBase):
     pass

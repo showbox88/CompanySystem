@@ -10,6 +10,31 @@ def get_agent(db: Session, agent_id: str):
 def get_agents(db: Session, skip: int = 0, limit: int = 100):
     return db.query(models.Agent).offset(skip).limit(limit).all()
 
+def get_skills(db: Session, skip: int = 0, limit: int = 100):
+    return db.query(models.Skill).offset(skip).limit(limit).all()
+
+def sync_skills(db: Session, registry_skills: dict):
+    """
+    Syncs in-memory registered skills to the database.
+    """
+    for name, data in registry_skills.items():
+        db_skill = db.query(models.Skill).filter(models.Skill.name == name).first()
+        if not db_skill:
+            # Create new skill
+            new_skill = models.Skill(
+                id=str(uuid.uuid4()),
+                name=name,
+                display_name=data.get("display_name", name),
+                description=data.get("description", "")
+            )
+            db.add(new_skill)
+        else:
+            # Update existing? (Optional, but good for description updates)
+            db_skill.description = data.get("description", "")
+            db_skill.display_name = data.get("display_name", name)
+            
+    db.commit()
+
 def create_agent(db: Session, agent: schemas.AgentCreate):
     db_agent = models.Agent(
         id=str(uuid.uuid4()),
@@ -27,8 +52,18 @@ def create_agent(db: Session, agent: schemas.AgentCreate):
     db.add(db_agent)
     db.commit()
     db.refresh(db_agent)
-    return db_agent
-
+    
+    # Handle Skills
+    if agent.skills:
+        for skill_id in agent.skills:
+            # Check validity
+            skill = db.query(models.Skill).filter(models.Skill.id == skill_id).first()
+            if skill:
+                 agent_skill = models.AgentSkill(agent_id=db_agent.id, skill_id=skill.id)
+                 db.add(agent_skill)
+        db.commit()
+        db.refresh(db_agent)
+        
     return db_agent
 
 def update_agent(db: Session, agent_id: str, agent_update: schemas.AgentUpdate):
@@ -36,9 +71,24 @@ def update_agent(db: Session, agent_id: str, agent_update: schemas.AgentUpdate):
     if not db_agent:
         return None
     
-    # Filter out None values to only update fields that are passed
+    # Filter out None values
     update_data = agent_update.model_dump(exclude_unset=True)
     
+    # Handle Skills separately if present
+    if "skills" in update_data:
+        skill_ids = update_data.pop("skills") # Remove from setattr loop
+        
+        # 1. Clear existing skills
+        db.query(models.AgentSkill).filter(models.AgentSkill.agent_id == agent_id).delete()
+        
+        # 2. Add new skills
+        if skill_ids:
+            for sid in skill_ids:
+                skill = db.query(models.Skill).filter(models.Skill.id == sid).first()
+                if skill:
+                    new_as = models.AgentSkill(agent_id=agent_id, skill_id=sid)
+                    db.add(new_as)
+        
     for key, value in update_data.items():
         setattr(db_agent, key, value)
     

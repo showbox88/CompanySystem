@@ -2,6 +2,29 @@
 
 All notable changes to the **AI Company System** project will be documented in this file.
 
+## [v1.2.0] - 2026-02-12
+### 🌟 Major Features (重大更新)
+- **AI Skill System (技能系统)**:
+    - **Architecture**: Implemented `SkillRegistry`, `SkillDispatcher`, and `AgentSkill` database mapping.
+    - **Image Generation**: Agents can now design images (using DALL-E 3) via `[[CALL_SKILL: image_generation]]`.
+    - **File Access**: Agents can read internal documents via `[[CALL_SKILL: read_file]]`.
+- **Multi-Turn Reasoning Engine (多步思考引擎)**:
+    - Background tasks now support a **Think-Act-Observe-Act** loop (up to 5 turns).
+    - Enables complex workflows like "Read Requirements -> Design Image -> Write Report".
+- **Enhanced Awareness (增强感知)**:
+    - **Log Injection**: Agents now directly read `Company_Log.md` to spot new files from colleagues.
+    - **Auto-Discovery**: `read_file` skill automatically searches subdirectories if the exact path is unknown.
+
+### 🛠️ Improvements & Fixes (改进与修复)
+- **Robustness**:
+    - **Fuzzy Skill Dispatching**: Corrects hallucinated skill names (e.g. `image_gen` -> `image_generation`).
+    - **Loose Argument Parsing**: Supports JS-style objects and unquoted keys.
+    - **Argument Aliasing**: `description` maps to `prompt`, `filename` maps to `file_path`.
+- **Backend Stability**:
+    - Fixed `IndentationError` in `main.py` causing crashes.
+    - Fixed `TypeError` in history processing for Pydantic/Dict compatibility.
+    - Fixed `BASE_DIR` calculation logic for accurate file path resolution.
+
 ## [v1.1.0] - 2026-02-11
 ### 🚀 New Features (新特性)
 - **Mental Sandbox (思维沙箱)**: 

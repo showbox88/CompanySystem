@@ -1,38 +1,61 @@
 
-import sqlite3
+import sys
 import os
 
-# Define database path
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DB_PATH = os.path.join(BASE_DIR, "company_ai.db")
+# Add parent directory to path to import app
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-def add_column(cursor, table_name, column_name, column_type):
+from backend.app.database import engine, Base
+from backend.app.models import AgentSkill, Skill, Agent
+from backend.app import models
+from sqlalchemy import text
+
+def migrate():
+    print("Starting Schema Migration...")
+    
+    with engine.connect() as conn:
+        # 1. Drop old tables if they exist
+        # We need to drop 'agent_skills' first due to FK
+        try:
+            print("Dropping 'agent_skills' table...")
+            conn.execute(text("DROP TABLE IF EXISTS agent_skills"))
+            conn.execute(text("DROP TABLE IF EXISTS skills"))
+            conn.commit()
+        except Exception as e:
+            print(f"Error dropping tables: {e}")
+
+    # 2. CRUD Create All
+    # This will create any missing tables.
+    # Since we dropped 'agent_skills' and 'skills', they will be recreated with new schema.
+    print("Creating new tables...")
+    Base.metadata.create_all(bind=engine)
+    
+    # 3. Seed Skills
+    from backend.app.skills import SkillRegistry
+    from sqlalchemy.orm import Session
+    
+    db = Session(bind=engine)
     try:
-        cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
-        print(f"Successfully added column '{column_name}' to table '{table_name}'.")
-    except sqlite3.OperationalError as e:
-        if "duplicate column name" in str(e):
-            print(f"Column '{column_name}' already exists in table '{table_name}'. Skipping.")
-        else:
-            print(f"Error adding column '{column_name}': {e}")
+        registry = SkillRegistry.get_all_skills()
+        for key, sk_data in registry.items():
+            existing = db.query(Skill).filter(Skill.name == key).first()
+            if not existing:
+                print(f"Seeding Skill: {sk_data['display_name']}")
+                new_skill = Skill(
+                    name=key,
+                    display_name=sk_data['display_name'],
+                    description=sk_data['description'],
+                    parameters_schema=sk_data['parameters']
+                )
+                db.add(new_skill)
+        db.commit()
+        print("Skill Seeding Complete.")
+    except Exception as e:
+        print(f"Error seeding skills: {e}")
+    finally:
+        db.close()
 
-def main():
-    if not os.path.exists(DB_PATH):
-        print(f"Database not found at {DB_PATH}")
-        return
-
-    print(f"Connecting to database at {DB_PATH}...")
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-
-    # Add new columns to agents table
-    add_column(cursor, "agents", "job_title", "VARCHAR")
-    add_column(cursor, "agents", "department", "VARCHAR")
-    add_column(cursor, "agents", "level", "VARCHAR")
-
-    conn.commit()
-    conn.close()
-    print("Database schema update complete.")
+    print("Migration Finished Successfully.")
 
 if __name__ == "__main__":
-    main()
+    migrate()

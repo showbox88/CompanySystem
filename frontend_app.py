@@ -81,12 +81,24 @@ def get_tasks():
         return []
     return []
 
+# Helper for Skills
+@st.cache_data(ttl=60)
+def get_skills():
+    try:
+        response = requests.get(f"{API_URL}/skills/")
+        if response.status_code == 200:
+            return response.json()
+    except:
+        return []
+    return []
+
 # Clear cache when we make changes (Create/Delete)
 def clear_cache():
     get_agents.clear()
     get_tasks.clear()
+    get_skills.clear()
 
-def create_agent(name, role, system_prompt, job_title="", department="", level=""):
+def create_agent(name, role, system_prompt, job_title="", department="", level="", skills=[]):
     payload = {
         "name": name,
         "role": role,
@@ -95,14 +107,15 @@ def create_agent(name, role, system_prompt, job_title="", department="", level="
         "level": level,
         "system_prompt": system_prompt,
         "model_name": "gpt-4-turbo",
-        "temperature": 0.7
+        "temperature": 0.7,
+        "skills": skills
     }
     res = make_request("POST", "/agents/", json=payload)
     if res and res.status_code == 200:
         clear_cache() # Force refresh
     return res
 
-def update_agent_details(agent_id, name, role, system_prompt, job_title, department, level):
+def update_agent_details(agent_id, name, role, system_prompt, job_title, department, level, skills=None):
     payload = {
         "name": name,
         "role": role,
@@ -111,9 +124,10 @@ def update_agent_details(agent_id, name, role, system_prompt, job_title, departm
         "level": level,
         "system_prompt": system_prompt
     }
+    if skills is not None:
+        payload["skills"] = skills
+        
     res = make_request("PUT", f"/agents/{agent_id}", json=payload)
-    if res and res.status_code == 200:
-        clear_cache()
     if res and res.status_code == 200:
         clear_cache()
     return res
@@ -202,12 +216,18 @@ if page == "Agent Center":
             with c3:
                 new_level = st.selectbox("Level", LEVEL_OPTIONS, index=0)
 
+            # Skills Selection
+            all_skills = get_skills()
+            skill_options = {s['display_name']: s['id'] for s in all_skills}
+            selected_skill_names = st.multiselect("Assign Skills", options=list(skill_options.keys()))
+            
             new_prompt = st.text_area("System Prompt", placeholder="You are an expert in...", height=150)
             submitted = st.form_submit_button("Create Agent")
             
             if submitted:
                 if new_name and new_role and new_prompt:
-                    res = create_agent(new_name, new_role, new_prompt, new_title, new_dept, new_level)
+                    selected_skill_ids = [skill_options[n] for n in selected_skill_names]
+                    res = create_agent(new_name, new_role, new_prompt, new_title, new_dept, new_level, selected_skill_ids)
                     if res and res.status_code == 200:
                         st.success("Agent Created Successfully!")
                         st.rerun()  # Refresh the page
@@ -228,6 +248,12 @@ if page == "Agent Center":
                     if not st.session_state.get(f"edit_mode_{agent['id']}", False):
                         st.write(f"**ID:** `{agent['id']}`")
                         st.write(f"**Title:** {agent.get('job_title', '-')} | **Dept:** {agent.get('department', '-')} | **Level:** {agent.get('level', '-')}")
+                        
+                        # Show Skills
+                        if agent.get('skills'):
+                             skill_names = [s['display_name'] for s in agent['skills']]
+                             st.write(f"**Skills:** {', '.join(skill_names)}")
+                        
                         st.markdown(f"**System Prompt:**\n> {agent['system_prompt']}")
                         
                         c1, c2 = st.columns([1, 1])
@@ -254,17 +280,27 @@ if page == "Agent Center":
                                 e_dept = st.text_input("Department", value=agent.get('department', ''))
                             with c3:
                                 current_level = agent.get('level', LEVEL_OPTIONS[0])
-                                # Handle case where current level is not in options (e.g. legacy data)
                                 idx = 0
                                 if current_level in LEVEL_OPTIONS:
                                     idx = LEVEL_OPTIONS.index(current_level)
                                 e_level = st.selectbox("Level", LEVEL_OPTIONS, index=idx)
                                 
+                            # Skills Edit
+                            all_skills = get_skills()
+                            skill_options = {s['display_name']: s['id'] for s in all_skills}
+                            
+                            # Pre-select based on agent's current skills
+                            current_skill_ids = [s['id'] for s in agent.get('skills', [])]
+                            default_skill_names = [s['display_name'] for s in agent.get('skills', []) if s['display_name'] in skill_options]
+                            
+                            e_skill_names = st.multiselect("Skills", options=list(skill_options.keys()), default=default_skill_names)
+
                             e_prompt = st.text_area("System Prompt", value=agent['system_prompt'], height=150)
                             
                             saved = st.form_submit_button("Save Changes")
                             if saved:
-                                res = update_agent_details(agent['id'], e_name, e_role, e_prompt, e_title, e_dept, e_level)
+                                e_skill_ids = [skill_options[n] for n in e_skill_names]
+                                res = update_agent_details(agent['id'], e_name, e_role, e_prompt, e_title, e_dept, e_level, e_skill_ids)
                                 if res:
                                     st.success("Updated!")
                                     st.session_state[f"edit_mode_{agent['id']}"] = False

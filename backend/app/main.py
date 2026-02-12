@@ -9,11 +9,27 @@ import traceback
 import openai
 from .database import engine, Base, get_db, SessionLocal
 from . import models, schemas, crud
+# Force load skills
+from . import skills
 
+# Create tables
 # Create tables
 models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Company AI System")
+
+@app.on_event("startup")
+def startup_event():
+    # Sync Skills from Registry to DB
+    from .skills.registry import SkillRegistry
+    db = SessionLocal()
+    try:
+        registered_skills = SkillRegistry.get_all_skills()
+        print(f"Syncing {len(registered_skills)} skills to DB...")
+        crud.sync_skills(db, registered_skills)
+        print("Skill Sync Complete.")
+    finally:
+        db.close()
 
 # --- LLM Service ---
 def get_llm_config(db: Session):
@@ -52,12 +68,25 @@ def call_llm_service(agent: models.Agent, prompt: str, config: dict, stream: boo
         f"{agent.system_prompt}"
     )
 
-    # Inject Company Logs for Secretary
-    if db and ("secretary" in agent.role.lower() or "secretary" in (agent.job_title or "").lower() or "秘书" in agent.role or "秘书" in (agent.job_title or "")):
-        recent_logs = crud.get_recent_logs(db, limit=20)
-        if recent_logs:
-            log_text = "\n".join([f"- [{log.timestamp.strftime('%Y-%m-%d %H:%M')}] {log.content}" for log in recent_logs])
-            identity_prompt += f"\n\n[Company System Activity Log]\n{log_text}\n(Use this information to answer questions about recent company events & files.)"
+    # Inject Company Logs for ALL Agents (Shared Awareness)
+    # Previously restricted to Secretary/Assistant, now broadened so everyone knows about new files
+    # Inject Company Logs for ALL Agents (Shared Awareness)
+    # Inject Company Logs for ALL Agents (Shared Awareness)
+    # READ DIRECTLY FROM MARKDOWN FILE (Source of Truth)
+    # backend/app/main.py -> backend/app -> backend -> CompanySystem
+    BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    LOG_FILE = os.path.join(BASE_DIR, "Company Doc", "System", "Company_Log.md")
+    
+    if os.path.exists(LOG_FILE):
+        try:
+            with open(LOG_FILE, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+                # Get last 15 lines
+                recent_lines = lines[-15:]
+                log_text = "".join(recent_lines)
+                identity_prompt += f"\n\n[Recent Company System Activity]\n{log_text}\n(Use this to be aware of recently created files by other agents.)"
+        except Exception as e:
+            print(f"Failed to read log file: {e}")
     
     # 2. Add Delegation Instruction for Secretary (Only in Chat Mode)
     if task_mode == "chat" and ("secretary" in agent.role.lower() or "秘书" in agent.role.lower() or "secretary" in (agent.job_title or "").lower()):
@@ -99,28 +128,11 @@ def call_llm_service(agent: models.Agent, prompt: str, config: dict, stream: boo
             "     [[DELEGATE: 小美 | Review the code]]\n"
         )
 
-    # Inject Company Directory & Auto-Log Instruction for Assistant
-    is_assistant = db and ("assistant" in agent.role.lower() or "assistant" in (agent.job_title or "").lower() or "助理" in agent.role or "助理" in (agent.job_title or ""))
-    if is_assistant:
-        # 1. Company Directory
-        all_agents = crud.get_agents(db, limit=1000)
-        table_header = "| Name | Role | Job Title | Department | Level |\n|---|---|---|---|---|\n"
-        table_rows = ""
-        for a in all_agents:
-            table_rows += f"| {a.name} | {a.role} | {a.job_title or '-'} | {a.department or '-'} | {a.level or '-'} |\n"
-        
-        identity_prompt += f"\n\n[Company Directory Data]\n{table_header}{table_rows}\n(You have access to the full employee list.)"
+    # Inject Thinking Protocol (Cognitive Architecture)
+    from .thoughts.engine import ThinkingEngine
+    identity_prompt += ThinkingEngine.enrich_system_prompt(agent, db, context={"task_mode": task_mode})
 
-        # 2. Auto-Log Instruction (Only in Chat Mode)
-        if task_mode == "chat":
-            identity_prompt += (
-                "\n\n[INSTRUCTION: AUTO-LOGGING]\n"
-                "If the user confirms a decision, project details, or meeting conclusion, verify it and then "
-                "summarize it in a special log format at the end of your response.\n"
-                "Format: [[LOG: {Summary of decision/discussion}]]\n"
-                "Example: [[LOG: Project Alpha kickoff confirmed for Monday.]]\n"
-                "The system will automatically save this to the Company Log."
-            )
+    # 3. Task Mode Instructions
 
     # 3. Task Mode Instructions
     
@@ -133,11 +145,20 @@ def call_llm_service(agent: models.Agent, prompt: str, config: dict, stream: boo
             f"REQUIRED IDENTITY: Name='{agent.name}', Role='{agent.role}', Department='{agent.department or 'N/A'}'\n"
             "1. DO NOT ask for confirmation. The user has ALREADY confirmed.\n"
             "2. DO NOT output tags like [[EXECUTE_TASK]].\n"
+            "   - EXCEPTION: You MAY use [[CALL_SKILL: ...]] tags if you need to generate images or search data.\n"
             "3. DO NOT chat or explain.\n"
             "4. OUTPUT DIRECTLY THE CONTENT of the requested file.\n"
             "5. CONTENT GUIDELINES: \n"
             "   - **LANGUAGE PRIORITY**: Use the SAME LANGUAGE as the prompt/instruction. (Chinese -> Chinese)\n"
             "   - IF DETAILS ARE MISSING: Invent plausible professional data matching YOUR IDENTITY (Name/Role) above.\n"
+            "   - **IMAGES**: If the task involves DESIGN/DRAWING, you MUST use the [[CALL_SKILL: image_generation...]] tag in the file content.\n"
+            "   - **EXTERNAL FILES**: If the task refers to another agent's output (e.g. 'Xiao Zhang's file'), you MUST:\n"
+            "       1. CHECK THE LOGS below for files created by **THAT AGENT** (e.g. Look for 'Created by (Xiao Zhang)').\n"
+            "       2. **IGNORE** files created by YOU ({agent.name}). Do not read your own output files!\n"
+            "       3. **MATCH INTENT**: If looking for a 'Description', look for files named 'Description', 'Requirements', or Chinese equivalents like '产品描述', '需求文档'.\n"
+            "       4. Use [[CALL_SKILL: read_file...]] to get the content.\n"
+            "       5. DO NOT ask the user for the file. FIND IT YOURSELF.\n"
+            "   - NEVER invent a different name for yourself.\n"
             "   - NEVER invent a different name for yourself.\n"
         )
     else: # Default: "chat"
@@ -171,8 +192,16 @@ def call_llm_service(agent: models.Agent, prompt: str, config: dict, stream: boo
         
         # Add history
         for msg in history:
-            role = "assistant" if msg.role == "assistant" else "user"
-            messages.append({"role": role, "content": msg.content})
+            # Handle both Pydantic models (msg.role) and Dicts (msg['role'])
+            if isinstance(msg, dict):
+                role_val = msg.get("role")
+                content_val = msg.get("content")
+            else:
+                role_val = msg.role
+                content_val = msg.content
+                
+            role = "assistant" if role_val == "assistant" else "user"
+            messages.append({"role": role, "content": content_val})
 
         # Add current message
         messages.append({"role": "user", "content": prompt})
@@ -219,68 +248,158 @@ def process_task_background(task_id: str):
         task.status = models.TaskStatus.RUNNING.value
         db.commit()
 
-        # 4. Call AI
-        try:
-            # Use task_mode="file_generation" to bypass confirmation and force content output
-            generated_content = call_llm_service(
+        # 4. Agent Loop (Think - Act - Observe - Act)
+        match_limit = 5 # Avoid infinite loops
+        final_content = ""
+        
+        # Initial Message History for this task
+        # We need to maintain a local history for this multi-step process
+        system_msg = {"role": "system", "content": agent.system_prompt} # We'll re-fetch the full enriched prompt below
+        
+        # Re-construct the full identity prompt (similar to call_llm_service logic)
+        # To avoid duplicating code, we might need to refactor call_llm_service to simply take messages? 
+        # For now, let's rely on call_llm_service's ability to handle the "first" call, and then we manually handle subsequent calls?
+        # Actually, call_llm_service currently constructs the system prompt internally every time.
+        # This makes multi-turn hard if we don't pass `history` to it.
+        # `call_llm_service` supports `history` param!
+        
+        task_history = [] 
+        
+        for turn in range(match_limit):
+            print(f"DEBUG: Background Task Turn {turn+1}")
+            
+            # Call LLM
+            # On first turn, history is empty.
+            # On subsequent turns, history contains: [Assistant(Call), User(Result)]
+            
+            response_text = call_llm_service(
                 agent, 
-                task.input_prompt, 
+                task.input_prompt if turn == 0 else "Continue...", # Subsequent user prompts are dummy or "Result: ..."
                 config, 
                 db=db, 
-                task_mode="file_generation"
+                task_mode="file_generation",
+                history=task_history
             )
             
-            # 5. Save to File
-            BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            # Use "Company Doc" and Agent Name
-            # Sanitize agent name for folder path
-            agent_name_clean = "".join([c for c in agent.name if c.isalnum() or c in (' ', '-', '_', '(', ')')]).strip()
-            OUTPUT_DIR = os.path.join(BASE_DIR, "Company Doc", agent_name_clean)
-            os.makedirs(OUTPUT_DIR, exist_ok=True)
+            # If this is a subsequent turn, we must append the result to the LAST response? 
+            # Wait, call_llm_service returns the NEW content.
             
-            timestamp = int(time.time())
-            # Sanitize title for filename
-            clean_title = "".join([c for c in task.title if c.isalnum() or c in (' ', '-', '_')]).strip().replace(' ', '_')
-            file_name = f"{clean_title}_{task_id[:8]}.md"
-            file_path = os.path.join(OUTPUT_DIR, file_name)
+            # Check for Skills
+            from .skill_dispatcher import SkillDispatcher
+            dispatcher = SkillDispatcher(db, agent)
             
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(generated_content)
+            result_text = response_text
+            executed_any = False
+            
+            # Parse ALL tags in this response
+            import re
+            # Regex to find [[CALL_SKILL: ...]]
+            # We iterate until no more tags found in THIS response
+            while True:
+                match = re.search(r"\[\[CALL_SKILL:\s*(.*?)\]\]", result_text, re.DOTALL)
+                if not match:
+                    break
                 
-            # 6. Complete
-            crud.update_task_status(
-                db, 
-                task_id, 
-                models.TaskStatus.COMPLETED, 
-                output=f"AI Task Completed. Generated {len(generated_content)} chars."
-            )
+                tag_string = match.group(0)
+                print(f"DEBUG: Found tag: {tag_string}")
+                
+                skill_result, executed = dispatcher.parse_and_execute(tag_string, config)
+                
+                # Replace the tag with the result in the text (so the file/history looks clean-ish)
+                # Or do we keep the tag and append result?
+                # Standard ReAct: Keep Thought, Append Observation.
+                # Our "File Mode": We want the FINAL file to be clean. 
+                # But for the Agent to "see" it, it needs to be in history.
+                
+                # Strategy: 
+                # Replace tag with result in `result_text` (so it becomes part of the assistant's output/observation)
+                # But wait, if we replace it, the agent sees the result *as if it wrote it*.
+                # Better: 
+                # 1. Add Assistant Message (with Tag) to history.
+                # 2. Add User Message (System Observation) to history.
+                # 3. Loop.
+                
+                # However, call_llm_service is designed to return a string, not manage history object statefully across calls easily 
+                # unless we carefully construct `history`.
+                
+                # Let's try the "Replacement" strategy for the *File Content*, but needed for *Context*?
+                # If we replace [[CALL]] with [RESULT], the Agent sees [RESULT] in its own past output? No.
+                
+                # Simpler implementation for this specific issue:
+                # 1. If skill executed, we treat `skill_result` as a NEW piece of info.
+                # 2. We append it to `task_history` as a System/User message.
+                # 3. We let the Agent generate again.
+                
+                executed_any = True
+                
+                # Add the original assistant output (with tag) to history
+                task_history.append({"role": "assistant", "content": tag_string}) # Just the tag? or whole text?
+                # Using whole text might be too long if repeated. Let's use the tag interaction.
+                
+                # Add observation
+                task_history.append({"role": "user", "content": f"System Output: {skill_result}"})
+                
+                # Remove the tag from the current result_text to avoid re-processing? 
+                # No, we're building a chain.
+                # Stop parsing this text, move to next turn.
+                break 
+            
+            if executed_any:
+                continue # loop to next turn (LLM will see result in history and generate next step)
+            else:
+                # No skills called. This is the Final Content.
+                final_content = response_text
+                break
+        
+        generated_content = final_content if final_content else "No content generated."
+             
+        # 5. Save to File
+        # ... (rest of saving logic)
+        
+        BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        agent_name_clean = "".join([c for c in agent.name if c.isalnum() or c in (' ', '-', '_', '(', ')')]).strip()
+        OUTPUT_DIR = os.path.join(BASE_DIR, "Company Doc", agent_name_clean)
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        
+        timestamp = int(time.time())
+        clean_title = "".join([c for c in task.title if c.isalnum() or c in (' ', '-', '_')]).strip().replace(' ', '_')
+        file_name = f"{clean_title}_{task_id[:8]}.md"
+        file_path = os.path.join(OUTPUT_DIR, file_name)
+        
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(generated_content)
+            
+        crud.update_task_status(
+            db, 
+            task_id, 
+            models.TaskStatus.COMPLETED, 
+            output=f"AI Task Completed. Generated {len(generated_content)} chars."
+        )
 
-            # 7. Log Event
-            log_content = f"Created file: {file_name} (Task: {task.title})"
-            crud.create_log(db, "FILE_CREATED", log_content, agent_id=agent.id)
+        crud.create_log(db, "FILE_CREATED", f"Created file: {file_name} (Task: {task.title})", agent_id=agent.id)
             
-            # Update file list
-            task.output_files = [file_name]
-            task.output_text = generated_content[:500] + "..." # Store preview
-            db.commit()
+        # Update file list
+        task.output_files = [file_name]
+        task.output_text = generated_content[:500] + "..." # Store preview
+        db.commit()
             
-        except Exception as e:
-            error_msg = f"AI Execution Failed: {str(e)}"
-            print(error_msg)
+    except Exception as e:
+        error_msg = f"AI Execution Failed: {str(e)}"
+        print(error_msg)
+        
+        # Write detailed error log to file for user debugging
+        BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        ERROR_LOG = os.path.join(BASE_DIR, "outputs", "error_log.txt")
+        os.makedirs(os.path.dirname(ERROR_LOG), exist_ok=True)
+        with open(ERROR_LOG, "a", encoding="utf-8") as f:
+            f.write(f"\n[{datetime.utcnow()}] Task {task_id}:\n{traceback.format_exc()}\n")
             
-            # Write detailed error log to file for user debugging
-            BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            ERROR_LOG = os.path.join(BASE_DIR, "outputs", "error_log.txt")
-            os.makedirs(os.path.dirname(ERROR_LOG), exist_ok=True)
-            with open(ERROR_LOG, "a", encoding="utf-8") as f:
-                f.write(f"\n[{datetime.utcnow()}] Task {task_id}:\n{traceback.format_exc()}\n")
-                
-            crud.update_task_status(
-                db, 
-                task_id, 
-                models.TaskStatus.FAILED, 
-                output=error_msg + " (See outputs/error_log.txt)"
-            )
+        crud.update_task_status(
+            db, 
+            task_id, 
+            models.TaskStatus.FAILED, 
+            output=error_msg + " (See outputs/error_log.txt)"
+        )
     finally:
         db.close()
 
@@ -440,6 +559,11 @@ def read_setting(key: str, db: Session = Depends(get_db)):
     if not setting:
         return {"key": key, "value": None}
     return setting
+
+# --- Skill Endpoints ---
+@app.get("/skills/", response_model=List[schemas.Skill])
+def read_skills(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+    return crud.get_skills(db, skip=skip, limit=limit)
 
 # --- Log Endpoints ---
 @app.post("/logs/decision", response_model=schemas.SystemLog)

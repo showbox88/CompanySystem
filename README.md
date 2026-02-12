@@ -11,21 +11,28 @@
 ## 🎯 核心设计理念
 
 本系统旨在探索 **"AI Agent as a Workforce" (AI 即劳动力)** 的概念：
-1.  **Mental Sandbox (思维沙箱)**: 秘书 (Dispatcher) 在执行命令前会先进行结构化分析，拒绝模糊指令。
-2.  **Zero-Shot Dispatch (零样本派发)**: 后台强制执行模式，消除聊天历史对任务执行的干扰。
-3.  **Result-Oriented**: 一切以产出为导向，所有任务最终都会在 `Company Doc` 文件夹中生成实体文件。
-
-## 📂 项目结构
-
-```
 /Company System
 ├── /Company Doc             # [核心] AI 员工产出的所有工作文件 (按名字归档)
 ├── /backend                 # 后端服务 (FastAPI + SQLite)
+│   ├── /app/skills          # [新] AI 技能库 (Image Gen, Read File...)
+│   └── ...
 ├── frontend_app.py          # 前端控制台 (Streamlit)
 ├── CHANGELOG.md             # 更新日志
 ├── STRUCTURE.md             # 架构说明
 └── ...
 ```
+
+## 🌟 核心特性 (v1.2.0)
+
+1.  **Mental Sandbox (思维沙箱)**: 秘书在执行命令前会进行结构化分析，拒绝模糊指令。
+2.  **Skill System (技能系统)**:
+    *   **Image Generation**: 调用 DALL-E 3 生成高质量图片。
+    *   **File Reading**: Agent 可以读取并分析公司内部文档 (`Company Doc`)。
+    *   **Auto-Discovery**: 自动递归搜索文件，无需提供精确路径。
+3.  **Multi-Turn Engine (多步思考引擎)**:
+    *   支持 Agent 进行 "Read -> Think -> Act" 的多步操作（例如：先读文档，再根据内容画图）。
+    *   自动注入 "Recent Company Logs"，实现 Agent 间的信息共享。
+4.  **Zero-Shot Dispatch**: 强制执行模式，消除聊天历史干扰。
 
 ## 🚀 快速开始
 

@@ -7,19 +7,24 @@ import enum
 from datetime import datetime
 from .database import Base
 
-# Association Table for Many-to-Many relationship between Agents and Skills
-agent_skills = Table(
-    'agent_skills',
-    Base.metadata,
-    Column('agent_id', String, ForeignKey('agents.id')),
-    Column('skill_id', String, ForeignKey('skills.id'))
-)
-
 class TaskStatus(str, enum.Enum):
     PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+
+# Association Object for Many-to-Many relationship with extra columns
+class AgentSkill(Base):
+    __tablename__ = 'agent_skills'
+    
+    agent_id = Column(String, ForeignKey('agents.id'), primary_key=True)
+    skill_id = Column(String, ForeignKey('skills.id'), primary_key=True)
+    enabled = Column(Integer, default=1) # 1=Enabled, 0=Disabled
+    config = Column(JSON, nullable=True) # Per-agent configuration overrides
+
+    # Relationships
+    agent = relationship("Agent", back_populates="agent_skills")
+    skill = relationship("Skill", back_populates="skill_agents")
 
 class Agent(Base):
     __tablename__ = "agents"
@@ -38,19 +43,23 @@ class Agent(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     # Relationships
-    skills = relationship("Skill", secondary=agent_skills, back_populates="agents")
     tasks = relationship("Task", back_populates="agent")
+    logs = relationship("SystemLog", back_populates="agent")
+    agent_skills = relationship("AgentSkill", back_populates="agent", cascade="all, delete-orphan")
+    # Proxy to access skills directly
+    # skills = association_proxy("agent_skills", "skill") 
 
 class Skill(Base):
     __tablename__ = "skills"
 
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    name = Column(String, index=True)
-    category = Column(String, nullable=True)
+    name = Column(String, index=True, unique=True) # e.g. "image_generation"
+    display_name = Column(String, nullable=True)
     description = Column(Text, nullable=True)
+    parameters_schema = Column(JSON, nullable=True) # JSON Schema for args
 
     # Relationships
-    agents = relationship("Agent", secondary=agent_skills, back_populates="skills")
+    skill_agents = relationship("AgentSkill", back_populates="skill")
 
 class Task(Base):
     __tablename__ = "tasks"

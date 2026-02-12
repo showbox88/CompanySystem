@@ -35,8 +35,17 @@ graph TD
 - **Schema**:
   - `agents`: Identity, Role, System Prompt.
   - `tasks`: Status, Input Prompt, Output File Path.
-  - `settings`: API Keys, Base URLs.
+  - `skills`: Registered capabilities (e.g., `image_generation`, `read_file`).
+  - `agent_skills`: Many-to-Many mapping of Agents to Skills.
   - `logs`: System events and decisions.
+
+### Backend Skills (`backend/app/skills/`)
+- **Registry**: Centralized registration of Python functions as AI Tools.
+- **Dispatcher**: Regex-based parser to detect `[[CALL_SKILL]]` tags.
+- **Built-ins**:
+  - `image_generation`: DALL-E 3 integration.
+  - `read_file`: Secure file access within `Company Doc` (supports Auto-Discovery).
+  - `list_files`: Directory listing.
 
 ## 3. Workflow Logic (业务逻辑)
 
@@ -55,11 +64,16 @@ graph TD
     *   Received `force_execution=True` request.
     *   Enters **Dispatch Mode** (History ignored, strict System Override).
     *   Outputs `[[EXECUTE_TASK: Report | ...content instructions...]]`.
-6.  **Task Execution (Background)**:
+6.  **Task Execution (Background Loop)**:
     *   Backend creates a `Task` record.
     *   Spawns a background thread.
-    *   LLM generates full content.
-    *   Writes file to `Company Doc/Xiao Ming/Report.md`.
+    *   **Multi-Turn Loop (Max 5 Turns)**:
+        *   **Turn 1**: Agent generates `[[CALL_SKILL: read_file...]]`.
+        *   **System**: Executes skill, returns content to History.
+        *   **Turn 2**: Agent sees content, generates `[[CALL_SKILL: image_generation...]]`.
+        *   **System**: Generates image, returns URL.
+        *   **Turn 3**: Agent synthesizes final report.
+    *   Writes final content to `Company Doc/Xiao Ming/Report.md`.
 
 ### B. File Generation Protocol (文件生成协议)
 
