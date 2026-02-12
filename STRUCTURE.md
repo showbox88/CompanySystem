@@ -9,7 +9,7 @@ graph TD
     User[User / Manager] -->|Browser| Frontend[Streamlit Frontend]
     Frontend -->|HTTP Requests| Backend[FastAPI Backend]
     Backend -->|SQLAlchemy| DB[(SQLite Database)]
-    Backend -->|Background Thread| LLM[LLM Service (OpenAI/DeepSeek)]
+    Backend -->|Background Thread| LLM["LLM Service (OpenAI/DeepSeek)"]
     LLM -->|Generate Content| FileSystem[Company Doc / Output]
 ```
 
