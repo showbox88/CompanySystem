@@ -110,7 +110,8 @@ def create_task(db: Session, task: schemas.TaskCreate):
         title=task.title,
         agent_id=task.agent_id,
         input_prompt=task.input_prompt,
-        status=models.TaskStatus.PENDING.value
+        status=models.TaskStatus.PENDING.value,
+        project_file=task.project_file
     )
     db.add(db_task)
     db.commit()
@@ -167,7 +168,8 @@ def create_log(db: Session, event_type: str, content: str, agent_id: str = None)
         os.makedirs(LOG_DIR, exist_ok=True)
         LOG_FILE = os.path.join(LOG_DIR, "Company_Log.md")
 
-        timestamp_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        # Use Local Time (Server System Time)
+        timestamp_str = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
         agent_name = "System"
         if agent_id:
              agent = get_agent(db, agent_id)

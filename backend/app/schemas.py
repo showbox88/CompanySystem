@@ -59,7 +59,7 @@ class SkillCreate(SkillBase):
     pass
 
 class TaskCreate(TaskBase):
-    pass
+    project_file: Optional[str] = None
 
 class ChatMessage(BaseModel):
     role: str
@@ -98,6 +98,7 @@ class Task(TaskBase):
     status: TaskStatus
     output_text: Optional[str] = None
     output_files: Optional[List[str]] = None
+    project_file: Optional[str] = None
     created_at: datetime
     finished_at: Optional[datetime] = None
 

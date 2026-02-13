@@ -87,10 +87,9 @@ class SkillDispatcher:
             parts = content.split("|", 1)
             skill_name = parts[0].strip()
             args_str = parts[1].strip()
-            try:
-                args = json.loads(args_str)
-            except json.JSONDecodeError:
-                return f"[ERROR: Invalid JSON arguments for skill '{skill_name}'.]", True
+            args = self._parse_json_safe(args_str)
+            if args is None: # _parse_json_safe returns {} on failure, but let's check if it returns valid dict
+                 return f"[ERROR: Invalid JSON arguments for skill '{skill_name}'.]", True
         else:
             # Format: name(args)
             # Simple parser for name(key="value", ...)

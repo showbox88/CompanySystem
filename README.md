@@ -29,10 +29,13 @@
     *   **Image Generation**: 调用 DALL-E 3 生成高质量图片。
     *   **File Reading**: Agent 可以读取并分析公司内部文档 (`Company Doc`)。
     *   **Auto-Discovery**: 自动递归搜索文件，无需提供精确路径。
-3.  **Multi-Turn Engine (多步思考引擎)**:
+3.  **Project Management (项目管理)**:
+    *   **Project Context**: 自动关联同一项目下的所有文件，Agent 可自动读取上游同事的产出。
+    *   **Auto-Flow**: 任务完成后自动触发下一阶段 (e.g., Writer -> Illustrator)。
+4.  **Multi-Turn Engine (多步思考引擎)**:
     *   支持 Agent 进行 "Read -> Think -> Act" 的多步操作（例如：先读文档，再根据内容画图）。
     *   自动注入 "Recent Company Logs"，实现 Agent 间的信息共享。
-4.  **Zero-Shot Dispatch**: 强制执行模式，消除聊天历史干扰。
+5.  **Zero-Shot Dispatch**: 强制执行模式，消除聊天历史干扰。
 
 ## 🚀 快速开始
 

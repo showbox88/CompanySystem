@@ -8,6 +8,9 @@ from datetime import datetime
 import traceback
 import openai
 from .database import engine, Base, get_db, SessionLocal
+from .models import Agent, Task
+from .workflows.registry import get_workflow, get_all_workflows_prompt
+from . import project_manager
 from . import models, schemas, crud
 # Force load skills
 from . import skills
@@ -81,8 +84,8 @@ def call_llm_service(agent: models.Agent, prompt: str, config: dict, stream: boo
         try:
             with open(LOG_FILE, "r", encoding="utf-8") as f:
                 lines = f.readlines()
-                # Get last 15 lines
-                recent_lines = lines[-15:]
+                # Get last 50 lines to ensure visibility of recent context
+                recent_lines = lines[-50:]
                 log_text = "".join(recent_lines)
                 identity_prompt += f"\n\n[Recent Company System Activity]\n{log_text}\n(Use this to be aware of recently created files by other agents.)"
         except Exception as e:
@@ -99,6 +102,7 @@ def call_llm_service(agent: models.Agent, prompt: str, config: dict, stream: boo
         
         identity_prompt += (
             f"\n\n[Company Directory Data]\n{table_header}{table_rows}\n(You have access to the full employee list.)"
+            f"\n\n{get_all_workflows_prompt()}"
             "\n\n[INSTRUCTION: COMMAND ANALYSIS PROTOCOL]\n"
             "You are a Scheduler/Dispatcher. To ensure accuracy, you MUST follow this 2-step process for EVERY user message:\n"
             "\n"
@@ -106,28 +110,35 @@ def call_llm_service(agent: models.Agent, prompt: str, config: dict, stream: boo
             "Before deciding to delegate or answer, output a Markdown table analyzing the request:\n"
             "| Field | Value |\n"
             "|---|---|\n"
-            "| **User Intent** | (QUERY / COMMAND / CHAT) |\n"
+            "| **User Intent** | (QUERY / COMMAND / CHAT / PROJECT_PLAN) |\n"
             "| **Key Entities** | (Who is mentioned?) |\n"
-            "| **Command Type** | (e.g. Write File, Answer Question, Assign Task) |\n"
+            "| **Command Type** | (e.g. Write File, Answer Question, Assign Task, Plan Project) |\n"
+            "| **Workflow ID** | (Select best fit from AVAILABLE WORKFLOWS, default 'general_task') |\n"
             "| **Valid Target?** | (Check Directory Pattern Matching: Yes/No) |\n"
             "\n"
             "### STEP 2: ACT\n"
             "Based on the table above:\n"
-            "1. **IF INTENT = QUERY/CHAT**:\n"
-            "   - Answer the question directly.\n"
-            "   - DO NOT generate delegation tags.\n"
-            "2. **IF INTENT = COMMAND**:\n"
+            "1. **IF INTENT = QUERY/CHAT** -> Answer directly.\n"
+            "2. **IF INTENT = PROJECT_PLAN (Complex/Sequential Goal)**:\n"
+            "   - TRIGGER: User uses words like 'First... Then...', 'After...', 'Based on...', '先...后...', '然后...'\n"
+            "   - TRIGGER: Tasks have dependencies (Task B needs Task A's output).\n"
+            "   - Break down the goal into a sequential checklist.\n"
+            "   - OUTPUT: [[CREATE_PROJECT: {Title} | {Step 1} | {Step 2} ...]]\n"
+            "   - STEP FORMAT: 'AgentName: Instruction' (e.g. 'Xiao Zhang: Write script')\n"
+            "   - EXAMPLE: [[CREATE_PROJECT: SciFi_Comic | Xiao Zhang: Write script | Xiao Mei: Draw content based on script]]\n"
+            "3. **IF INTENT = COMMAND (Single/Parallel Task)**:\n"
+            "   - TRIGGER: Independent tasks that can run at the same time.\n"
+            "   - Identify ALL targets.\n"
             "   - Identify ALL targets.\n"
             "   - **CRITICAL**: The Target Name MUST match the 'Name' column in the [Company Directory Data] EXACTLY.\n"
             "   - DO NOT translate names (e.g. if directory says '小张', DO NOT output 'Xiao Zhang').\n"
             "   - **CRITICAL**: DO NOT TRANSLATE THE INSTRUCTION.\n"
             "   - OUTPUT THE DELEGATION TAGS, ONE PER LINE.\n"
-            "   - TAG FORMAT: [[DELEGATE: {Exact Target Name from Directory} | {Original Instruction}]]\n"
+            "   - TAG FORMAT: [[DELEGATE: {Exact Target Name} | {Workflow ID} | {Original Instruction}]]\n"
             "   - EXAMPLE: \n"
-            "     [[DELEGATE: 小张 | 写一份日报]]\n"
-            "     [[DELEGATE: 小美 | Review the code]]\n"
+            "     [[DELEGATE: 小张 | content_creation | 写一份日报]]\n"
+            "     [[DELEGATE: 小美 | visual_design | Draw a sci-fi bike]]\n"
         )
-
     # Inject Thinking Protocol (Cognitive Architecture)
     from .thoughts.engine import ThinkingEngine
     identity_prompt += ThinkingEngine.enrich_system_prompt(agent, db, context={"task_mode": task_mode})
@@ -136,6 +147,29 @@ def call_llm_service(agent: models.Agent, prompt: str, config: dict, stream: boo
 
     # 3. Task Mode Instructions
     
+    
+    if task_mode == "background_worker":
+        # BACKGROUND WORKER MODE (Multi-Turn Reasoning)
+        identity_prompt += (
+            f"\n\n[INSTRUCTION: BACKGROUND TASK EXECUTION]\n"
+            "ROLE: You are an autonomous Task Executor. You DO NOT chat. You ONLY execute skills.\n"
+            "OBJECTIVE: Produce the final output file requested by the user.\n"
+            "\n"
+            "!!! CRITICAL RULES !!!\n"
+            "1. IF you need information (e.g. description, content) -> CALL 'read_file'.\n"
+            "2. IF you need to generate media -> CALL 'image_generation'.\n"
+            "3. IF you have the results -> Output the final file content directly.\n"
+            "4. NEVER ask the user for clarification. GUESS based on [Recent Company System Activity] or [Context Hints].\n"
+            "\n"
+            "EXAMPLES:\n"
+            "User: 'Draw a bike based on Xiao Zhang'\n"
+            "You: [[CALL_SKILL: read_file | {'file_path': 'Xiao Zhang/Bike_Description.md'}]]\n"
+            "\n"
+            "User: 'Generate image from prompt'\n"
+            "You (finding 'Prompt_123.md' in logs): [[CALL_SKILL: read_file | {'file_path': 'Prompt_123.md'}]]\n"
+            "\n"
+            "ACTION REQUIRED: Output a [[CALL_SKILL]] tag NOW.\n"
+        )
     
     if task_mode == "file_generation":
         # Force Generation of FILE CONTENT
@@ -200,11 +234,18 @@ def call_llm_service(agent: models.Agent, prompt: str, config: dict, stream: boo
                 role_val = msg.role
                 content_val = msg.content
                 
+            if not content_val or not str(content_val).strip():
+                continue # Skip empty messages
+                
             role = "assistant" if role_val == "assistant" else "user"
             messages.append({"role": role, "content": content_val})
 
         # Add current message
-        messages.append({"role": "user", "content": prompt})
+        if prompt and str(prompt).strip():
+            messages.append({"role": "user", "content": prompt})
+        else:
+            print("WARNING: call_llm_service received empty prompt. Using placeholder.")
+            messages.append({"role": "user", "content": "Proceed."})
 
     payload = {
         "model": agent.model_name,
@@ -254,36 +295,199 @@ def process_task_background(task_id: str):
         
         # Initial Message History for this task
         # We need to maintain a local history for this multi-step process
-        system_msg = {"role": "system", "content": agent.system_prompt} # We'll re-fetch the full enriched prompt below
+        
+        # [WORKFLOW DETECTION]
+        # Check if the prompt has [WORKFLOW: xxx]
+        workflow_data = None
+        import re
+        wf_match = re.match(r"\[WORKFLOW:\s*(.*?)\]", task.input_prompt)
+        if wf_match:
+            wf_id = wf_match.group(1).strip()
+            workflow_data = get_workflow(wf_id)
+            print(f"DEBUG: Task assigned Workflow: {wf_id}")
+        else:
+            # Default to General Task
+            workflow_data = get_workflow("general_task")
+            
+        # Format SOP Steps
+        sop_text = "\n".join(workflow_data['steps'])
+        
+        # Inject SOP into System Prompt (Override/Append)
+        agent_system_prompt = agent.system_prompt + f"\n\n[ASSIGNED PROTOCOL: {workflow_data['name']}]\nDESCRIPTION: {workflow_data['description']}\nSTEPS:\n{sop_text}\n\n[INSTRUCTION]\nStrictly follow the STEPS above. Process one step at a time if needed.\n\n[CRITICAL OUTPUT FORMAT]\nThis task is for file generation. Your output will be saved DIRECTLY to a file.\n1. DO NOT output your internal thought process, analysis, or 'Step 1...' headers.\n2. DO NOT include conversational filler like 'Here is the story:'.\n3. OUTPUT ONLY THE FINAL RESULT CONTENT.\n4. DO NOT ASK FOR CONFIRMATION. YOU HAVE FULL PERMISSION. EXECUTE IMMEDIATELY."
+        
+        system_msg = {"role": "system", "content": agent_system_prompt} 
         
         # Re-construct the full identity prompt (similar to call_llm_service logic)
         # To avoid duplicating code, we might need to refactor call_llm_service to simply take messages? 
         # For now, let's rely on call_llm_service's ability to handle the "first" call, and then we manually handle subsequent calls?
         # Actually, call_llm_service currently constructs the system prompt internally every time.
-        # This makes multi-turn hard if we don't pass `history` to it.
-        # `call_llm_service` supports `history` param!
+        # So we need to PASS this new `agent_system_prompt` to call_llm_service.
+        # But call_llm_service takes `Agent` object and reads `agent.system_prompt`.
+        # HACK: Temporarily modify the agent object instance (not DB) for this call?
+        agent.system_prompt = agent_system_prompt # This modifies the ORM object in memory for this session
         
         task_history = [] 
         
-        for turn in range(match_limit):
-            print(f"DEBUG: Background Task Turn {turn+1}")
+        # [CONTEXT HINT INJECTION]
+        # To help the agent find relevant files (since System Prompt might be ignored),
+        # we parse the recent logs and append potential file candidates to the USER PROMPT.
+        try:
+            BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            LOG_FILE = os.path.join(BASE_DIR, "Company Doc", "System", "Company_Log.md")
+            if os.path.exists(LOG_FILE):
+                with open(LOG_FILE, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+                    # Look for [FILE_CREATED] in last 30 lines
+                    recent_files = []
+                    seen_files = set()
+                    for line in lines[-30:]:
+                        if "[FILE_CREATED]" in line:
+                            # Parse: - **[Time]** [FILE_CREATED] (AgentName): Created file: Filename ...
+                            # 1. Extract Agent Name
+                            try:
+                                author = line.split("(")[1].split(")")[0].strip()
+                            except:
+                                author = "Unknown"
+                                
+                            # 2. Skip if author is me (Prevent Self-Reading Loop)
+                            print(f"DEBUG: Checking File Log - Author: '{author}' vs Agent: '{agent.name}'")
+                            if author == agent.name:
+                                continue
+                                
+                            # 3. Extract Filename
+                            parts = line.split("Created file: ")
+                            if len(parts) > 1:
+                                fname = parts[1].split(" ")[0].strip()
+                                if fname not in seen_files:
+                                    recent_files.append(f"[{author}] {fname}")
+                                    seen_files.add(fname)
+                    
+                    if recent_files:
+                        hint_msg = "\n\n[System Context Hint: POTENTIAL TARGET FILES (Use 'read_file' on one of these)]:\n"
+                        for rf in recent_files:
+                            hint_msg += f"- {rf}\n"
+                        hint_msg += "(System detected these recent files. You MUST read the most relevant one to proceed.)"
+                        
+                    if recent_files:
+                        hint_msg = "\n\n[System Context Hint: POTENTIAL TARGET FILES]\n"
+                        for rf in recent_files:
+                            hint_msg += f"- {rf}\n"
+                        hint_msg += "(Note: These files were recently created by others. Use them ONLY if your task requires it. Otherwise, ignore them.)"
+                        
+                        # [SMART CONTEXT] Auto-read the file if the prompt mentions the author
+                        # e.g. "based on the story written by Xiao Zhang" -> Find Xiao Zhang's file and read it.
+                        prompt_lower = task.input_prompt.lower()
+                        for rf in recent_files:
+                            # rf format: "[Author] Filename"
+                            try:
+                                r_author = rf.split("]")[0].replace("[", "").strip()
+                                r_fname = rf.split("]")[1].strip()
+                                
+                                # Check if author name is in prompt (e.g. "based on Xiao Zhang")
+                                # Simple partial match
+                                if r_author.lower() in prompt_lower:
+                                    print(f"DEBUG: Smart Context - Start reading '{r_fname}' for instruction '{task.input_prompt[:20]}...'")
+                                    
+                                    # Locate the file
+                                    # We need to find where it lives.
+                                    # We know the structure: Company Doc/{Author}/{Filename}
+                                    # But Agent Name might be normalized.
+                                    # Let's search recursively or guess.
+                                    
+                                    # Try Guessing
+                                    # Need a helper to find file by name in Company Doc
+                                    potential_path = os.path.join(BASE_DIR, "Company Doc", r_author, r_fname)
+                                    if not os.path.exists(potential_path):
+                                         # Search
+                                         for root, dirs, files in os.walk(os.path.join(BASE_DIR, "Company Doc")):
+                                             if r_fname in files:
+                                                 potential_path = os.path.join(root, r_fname)
+                                                 break
+                                    
+                                    if os.path.exists(potential_path):
+                                        with open(potential_path, "r", encoding="utf-8") as pf:
+                                            f_content = pf.read()
+                                            hint_msg += f"\n\n[AUTO-READ CONTENT of '{r_fname}']:\n{f_content[:2000]}\n...(content truncated if too long)..."
+                                            print(f"DEBUG: Auto-read {len(f_content)} bytes.")
+                            except Exception as e:
+                                print(f"DEBUG: Smart Context Error: {e}")
+
+                        # [PROJECT CONTEXT FALLBACK]
+                        # If we are in a PROJECT, and no specific file has been auto-read yet,
+                        # assume the MOST RECENT file from ANYONE ELSE is the input for this step.
+                        # (Sequential workflow assumption)
+                        if task.project_file and "[AUTO-READ CONTENT" not in hint_msg and recent_files:
+                            print("DEBUG: Project Context Fallback - Auto-reading the most recent file.")
+                            try:
+                                # recent_files is sorted by time (lines read from log bottom-up? wait, log lines are chronological)
+                                # We iterated `lines[-30:]`. So the last item in `recent_files` is the most recent.
+                                # recent_files append order: chronological (lines read sequentially)
+                                last_file_entry = recent_files[-1] 
+                                # entry format: "[Author] Filename"
+                                
+                                lf_author = last_file_entry.split("]")[0].replace("[", "").strip()
+                                lf_fname = last_file_entry.split("]")[1].strip()
+                                
+                                # Find path
+                                potential_path = os.path.join(BASE_DIR, "Company Doc", lf_author, lf_fname)
+                                if not os.path.exists(potential_path):
+                                     for root, dirs, files in os.walk(os.path.join(BASE_DIR, "Company Doc")):
+                                         if lf_fname in files:
+                                             potential_path = os.path.join(root, lf_fname)
+                                             break
+                                             
+                                if os.path.exists(potential_path):
+                                    with open(potential_path, "r", encoding="utf-8") as pf:
+                                        f_content = pf.read()
+                                        hint_msg += f"\n\n[PROJECT CONTEXT: Auto-read '{lf_fname}' by {lf_author}]:\n{f_content[:2000]}\n...(content truncated)..."
+                            except Exception as e:
+                                print(f"DEBUG: Project Context Fallback Failed: {e}")
+                                
+                    else:
+                        hint_msg = ""
+                        
+        except Exception as e:
+            print(f"DEBUG: Failed to inject context hint: {e}")
+            hint_msg = ""
             
-            # Call LLM
-            # On first turn, history is empty.
-            # On subsequent turns, history contains: [Assistant(Call), User(Result)]
+        generated_image_files = []
+        last_skill_call = None
+        total_skills_executed = 0
+        
+        for turn in range(match_limit):
+            print(f"DEBUG: Background Task Turn {turn+1}. Prompt: {task.input_prompt[:50]}...")
+            
+            # Construct Effective Prompt
+            effective_prompt = ""
+            if turn == 0:
+                # Turn 0: Instruction + Hint
+                effective_prompt = f"[PRIMARY INSTRUCTION]\n{task.input_prompt}\n[/PRIMARY INSTRUCTION]"
+                if hint_msg:
+                    effective_prompt += f"\n\n{hint_msg}"
+            else:
+                # Subsequent turns
+                effective_prompt = "Continue/Result: ..."
             
             response_text = call_llm_service(
                 agent, 
-                task.input_prompt if turn == 0 else "Continue...", # Subsequent user prompts are dummy or "Result: ..."
+                effective_prompt, 
                 config, 
                 db=db, 
-                task_mode="file_generation",
+                task_mode="background_worker",
                 history=task_history
             )
             
-            # If this is a subsequent turn, we must append the result to the LAST response? 
-            # Wait, call_llm_service returns the NEW content.
-            
+            # Check for External System Errors
+            if "[SYSTEM ERROR]" in response_text and "No previous valid input" in response_text:
+                print(f"CRITICAL ERROR FROM LLM: {response_text}")
+                # Retry if turn 0
+                if turn == 0:
+                    print("Retrying Turn 0 with re-phrased prompt...")
+                    current_prompt = "Execute this task: " + task.input_prompt
+                    response_text = call_llm_service(agent, current_prompt, config, db=db, task_mode="background_worker", history=[])
+                else:
+                    pass
+
             # Check for Skills
             from .skill_dispatcher import SkillDispatcher
             dispatcher = SkillDispatcher(db, agent)
@@ -293,8 +497,6 @@ def process_task_background(task_id: str):
             
             # Parse ALL tags in this response
             import re
-            # Regex to find [[CALL_SKILL: ...]]
-            # We iterate until no more tags found in THIS response
             while True:
                 match = re.search(r"\[\[CALL_SKILL:\s*(.*?)\]\]", result_text, re.DOTALL)
                 if not match:
@@ -305,52 +507,92 @@ def process_task_background(task_id: str):
                 
                 skill_result, executed = dispatcher.parse_and_execute(tag_string, config)
                 
-                # Replace the tag with the result in the text (so the file/history looks clean-ish)
-                # Or do we keep the tag and append result?
-                # Standard ReAct: Keep Thought, Append Observation.
-                # Our "File Mode": We want the FINAL file to be clean. 
-                # But for the Agent to "see" it, it needs to be in history.
-                
-                # Strategy: 
-                # Replace tag with result in `result_text` (so it becomes part of the assistant's output/observation)
-                # But wait, if we replace it, the agent sees the result *as if it wrote it*.
-                # Better: 
-                # 1. Add Assistant Message (with Tag) to history.
-                # 2. Add User Message (System Observation) to history.
-                # 3. Loop.
-                
-                # However, call_llm_service is designed to return a string, not manage history object statefully across calls easily 
-                # unless we carefully construct `history`.
-                
-                # Let's try the "Replacement" strategy for the *File Content*, but needed for *Context*?
-                # If we replace [[CALL]] with [RESULT], the Agent sees [RESULT] in its own past output? No.
-                
-                # Simpler implementation for this specific issue:
-                # 1. If skill executed, we treat `skill_result` as a NEW piece of info.
-                # 2. We append it to `task_history` as a System/User message.
-                # 3. We let the Agent generate again.
-                
                 executed_any = True
                 
-                # Add the original assistant output (with tag) to history
-                task_history.append({"role": "assistant", "content": tag_string}) # Just the tag? or whole text?
-                # Using whole text might be too long if repeated. Let's use the tag interaction.
+                # [LOOP PREVENTION]
+                current_skill_signature = tag_string
+                if current_skill_signature == last_skill_call:
+                    print(f"DEBUG: Detected Repetitive Skill Call '{tag_string}'. Aborting Loop.")
+                    
+                    # specific guidance
+                    advice = "You are repeating yourself. Stopping execution."
+                    if "read_file" in tag_string:
+                        advice = "You have already read this file. The content is visible in the history above. DO NOT READ IT AGAIN. Proceed immediately to the next step (e.g., generate image or write content)."
+                    elif "image_generation" in tag_string:
+                        advice = "You have already generated the image. The system has captured it. DO NOT GENERATE AGAIN. Output the final response now."
+                    
+                    task_history.append({"role": "user", "content": f"[SYSTEM]: {advice}"})
+                    break 
+                last_skill_call = current_skill_signature
+
+                # [IMAGE OUTPUT CAPTURE]
+                skill_res_str = str(skill_result)
                 
-                # Add observation
+                # DEBUG LOGGING
+                print(f"DEBUG: Skill Execution Result: {skill_res_str}")
+                try:
+                    crud.create_log(db, "SKILL_DEBUG", f"Agent {agent.name} executed {tag_string}. Result: {skill_res_str[:200]}...", agent_id=agent.id)
+                except:
+                    pass
+
+                if "image_generation" in tag_string:
+                    # 1. Check for explicit path format "Image generated at: ..."
+                    if "Image generated at" in skill_res_str:
+                        try:
+                            img_path = skill_res_str.split(": ")[1].strip()
+                            generated_image_files.append(img_path)
+                            print(f"DEBUG: Captured Image (Explicit): {img_path}")
+                        except:
+                            pass
+                    # 2. Check for Markdown format "![...](path)"
+                    else:
+                        match_md = re.search(r"!\[.*?\]\((.*?)\)", skill_res_str)
+                        if match_md:
+                            img_path = match_md.group(1).strip()
+                            # If path is URL, we might exclude it if we only want local files?
+                            # But builtins.py returns "assets/img.png" for local files.
+                            if "assets/" in img_path:
+                                generated_image_files.append(img_path)
+                                print(f"DEBUG: Captured Image (Markdown): {img_path}")
+                
+                # Add to history
+                task_history.append({"role": "assistant", "content": tag_string})
                 task_history.append({"role": "user", "content": f"System Output: {skill_result}"})
                 
-                # Remove the tag from the current result_text to avoid re-processing? 
-                # No, we're building a chain.
-                # Stop parsing this text, move to next turn.
                 break 
             
             if executed_any:
-                continue # loop to next turn (LLM will see result in history and generate next step)
+                total_skills_executed += 1
+                continue 
             else:
-                # No skills called. This is the Final Content.
+                # No skills called. Check for content.
+                # RELAXED RULE: If we have executed AT LEAST ONE skill previously (e.g. read file, generated image),
+                # we accept "Done" or short responses as final.
+                
+                is_short_response = len(response_text.strip()) < 50
+                has_done_work = total_skills_executed > 0
+                
+                if turn < 2 and not has_done_work and is_short_response and "[[CALL_SKILL" not in response_text:
+                     print(f"DEBUG: No skill triggered in Turn {turn+1} AND content too short AND no prior work. Forcing retry.")
+                     task_history.append({"role": "assistant", "content": response_text})
+                     task_history.append({"role": "user", "content": "[SYSTEM ERROR]: You failed to take action. You are a Background Worker. You MUST using a [[CALL_SKILL]] tag to proceed. Do not just talk. Execute now."})
+                     continue
+                
+                # Otherwise, accept as final content
+                print(f"DEBUG: No skills triggered. Final Response: {result_text[:100]}...")
                 final_content = response_text
                 break
         
+        # [FINAL CONTENT ASSEMBLER]
+        if generated_image_files:
+            if not final_content: 
+                final_content = "### Generated Assets\n"
+            else:
+                final_content += "\n\n### Generated Assets\n"
+                
+            for img in generated_image_files:
+                final_content += f"![Generated Image]({img})\n"
+                
         generated_content = final_content if final_content else "No content generated."
              
         # 5. Save to File
@@ -382,6 +624,57 @@ def process_task_background(task_id: str):
         task.output_files = [file_name]
         task.output_text = generated_content[:500] + "..." # Store preview
         db.commit()
+            
+        # [PROJECT FEEDBACK LOOP]
+        if task.project_file and os.path.exists(task.project_file):
+            print(f"DEBUG: Updating Project File: {task.project_file}")
+            
+            # 1. Mark Step as Completed
+            # We assume the step instruction is contained in task.input_prompt
+            # But task.input_prompt might be long.
+            # However, 'mark_step_completed' matches partial content.
+            # Since we generated the task FROM the step text, it should match.
+            project_manager.mark_step_completed(task.project_file, task.input_prompt[:50]) # Match first 50 chars
+            
+            # 2. Get Next Step
+            next_step = project_manager.get_next_pending_step(task.project_file)
+            
+            if next_step:
+                print(f"DEBUG: Found Next Project Step: {next_step}")
+                
+                # Parse "Agent: Instruction"
+                if ":" in next_step:
+                    target_name, instruction = next_step.split(":", 1)
+                    target_name = target_name.strip()
+                    instruction = instruction.strip()
+                    
+                    # Find Agent
+                    target_agent = db.query(models.Agent).filter(models.Agent.name.contains(target_name)).first()
+                    if target_agent:
+                        # Create Next Task
+                        new_task = schemas.TaskCreate(
+                            title=f"Project Task: {target_name}",
+                            input_prompt=instruction,
+                            agent_id=target_agent.id,
+                            project_file=task.project_file # Pass the baton
+                        )
+                        
+                        next_task = crud.create_task(db, new_task)
+                        
+                        # Log to Company Log so Secretary knows
+                        crud.create_log(db, "PROJECT_UPDATE", f"Step completed. Auto-starting next step for {target_name}: {instruction}", agent_id="System")
+                        
+                        # Recursive Call? No, separate thread/process to avoid stack depth
+                        # In FastAPI BackgroundTasks, we can't easily add more.
+                        # But we are in a thread. We can spawn another.
+                        import threading
+                        t = threading.Thread(target=process_task_background, args=(next_task.id,))
+                        t.start()
+                    else:
+                        crud.create_log(db, "PROJECT_ERROR", f"Could not find agent '{target_name}' for next step.", agent_id="System")
+            else:
+                print("DEBUG: Project Execution Complete!")
+                crud.create_log(db, "PROJECT_COMPLETE", f"All steps in {os.path.basename(task.project_file)} are done.", agent_id="System")
             
     except Exception as e:
         error_msg = f"AI Execution Failed: {str(e)}"
@@ -497,31 +790,66 @@ def chat_with_agent(chat_request: schemas.ChatRequest, db: Session = Depends(get
                     log_text = match_log.group(1).strip()
                     crud.create_log(db, "MEETING_LOG", log_text, agent_id=agent.id)
                     
-                # 2. Execute Task
+                # 2. Execute Task (Single)
                 match_task = re.search(r"\[\[EXECUTE_TASK:(.*?)\|(.*?)\]\]", full_content, re.DOTALL)
                 if match_task:
                     title = match_task.group(1).strip()
                     prompt = match_task.group(2).strip()
-                    
-                    # Create Task
-                    new_task = schemas.TaskCreate(
-                        title=title,
-                        input_prompt=prompt,
-                        agent_id=agent.id
-                    )
-                    db_task = crud.create_task(db, new_task)
-                    
-                    # Run in background
-                    db_task = crud.create_task(db, new_task)
-                    
-                    # Run in background
-                    import threading
-                    # Launch the background processing directly
-                    t = threading.Thread(target=process_task_background, args=(db_task.id,))
-                    t.start()
-                    
+                    # (Legacy support, maybe unused now consistent with DELEGATE)
+                    pass
+
+                # 3. Create Project & Auto-Delegate First Step
+                match_proj = re.search(r"\[\[CREATE_PROJECT:(.*?)\]\]", full_content, re.DOTALL)
+                if match_proj:
+                    content = match_proj.group(1).strip()
+                    parts = [p.strip() for p in content.split("|")]
+                    if len(parts) >= 2:
+                        title = parts[0]
+                        steps = parts[1:]
+                        
+                        # 1. Create File
+                        proj_path = project_manager.create_project_file(title, steps)
+                        yield f"\n\n🚀 **Project Created**: `{os.path.basename(proj_path)}`\n"
+                        
+                        # 2. Get Next Step
+                        next_step = project_manager.get_next_pending_step(proj_path)
+                        if next_step:
+                            # Parse "Agent: Instruction"
+                            if ":" in next_step:
+                                target_name, instruction = next_step.split(":", 1)
+                                target_name = target_name.strip()
+                                instruction = instruction.strip()
+                                
+                                # Find Agent ID
+                                all_agents = crud.get_agents(db) # We are inside a dependency scope? Yes, db is available.
+                                target_agent = next(
+                                    (a for a in all_agents if target_name in a.name or a.name in target_name), 
+                                    None
+                                )
+                                
+                                if target_agent:
+                                    # Create Task linked to Project
+                                    new_task = schemas.TaskCreate(
+                                        title=f"Project Task: {target_name}",
+                                        input_prompt=instruction,
+                                        agent_id=target_agent.id,
+                                        project_file=proj_path # LINKED!
+                                    )
+                                    db_task = crud.create_task(db, new_task)
+                                    
+                                    import threading
+                                    t = threading.Thread(target=process_task_background, args=(db_task.id,))
+                                    t.start()
+                                    
+                                    yield f"👉 **Auto-Started Step 1**: Delegated to `{target_name}`\n"
+                                else:
+                                    yield f"⚠️ **Error**: Could not find agent '{target_name}' for Step 1.\n"
+                        else:
+                            yield "✅ **Project Complete** (No steps?)\n"
+
             except Exception as e:
                 print(f"Post-processing failed: {e}")
+                yield f"\n[System Error: {str(e)}]"
 
         return StreamingResponse(event_generator(), media_type="text/event-stream")
 

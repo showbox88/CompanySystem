@@ -163,30 +163,45 @@ def read_file(config: Dict[str, Any], args: Dict[str, Any]) -> str:
         return "[ERROR: Access Denied. You can only read files within 'Company Doc'.]"
         
     if not os.path.exists(target_path):
-        # AUTO-DISCOVERY: If file not found, search for it recursively in Company Doc
-        # This handles cases where Agent only knows filename but not the subdirectory (e.g. "Xiao Zhang/file.md")
-        filename = os.path.basename(clean_path)
-        found_path = None
+        # AUTO-DISCOVERY V2: Smart Fuzzy Match & Newest First
+        # 1. Exact match (if file exists recursively)
+        # 2. Prefix match (e.g. "Report.md" matches "Report_HASH.md")
         
+        search_name = os.path.basename(clean_path)
+        search_stem = os.path.splitext(search_name)[0] # "Report" from "Report.md"
+        
+        candidates = []
         for root, dirs, files in os.walk(COMPANY_DOC_DIR):
-            if filename in files:
-                found_path = os.path.join(root, filename)
-                break
+            for file in files:
+                # Candidate 1: Exact Filename Match
+                if file == search_name:
+                    candidates.append(os.path.join(root, file))
+                    continue
+                
+                # Candidate 2: Prefix Match with Hash (file starts with "Report" and ends with ".md")
+                # Ensure we don't match "ReportALL.md" if looking for "Report"
+                if file.startswith(search_stem) and file.endswith(".md"):
+                     candidates.append(os.path.join(root, file))
         
-        if found_path:
-            target_path = found_path
+        if candidates:
+            # Sort by modification time (Newest First)
+            candidates.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+            target_path = candidates[0]
+            # Optional: We could return a note saying "Auto-selected latest file: ..."
         else:
-            return f"[ERROR: File not found: {file_path} (Searched entire Company Doc directory)]"
-        
-    try:
-        with open(target_path, "r", encoding="utf-8") as f:
-            content = f.read()
+             return f"[ERROR: File not found: {file_path}. (Searched for exact name and latest version starting with '{search_stem}')]"
+             
+    # Final Check
+    if os.path.exists(target_path):
+        try:
+            with open(target_path, "r", encoding="utf-8") as f:
+                content = f.read()
             # Limit content size?
             if len(content) > 10000:
                  return f"[FILE CONTENT (Truncated first 10k chars)]:\n{content[:10000]}...\n(File too large)"
             return f"[FILE CONTENT]:\n{content}"
-    except Exception as e:
-        return f"[ERROR: Failed to read file: {str(e)}]"
+        except Exception as e:
+            return f"[ERROR: Failed to read file: {str(e)}]"
 
 @SkillRegistry.register(
     name="list_files",

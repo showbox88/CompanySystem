@@ -2,6 +2,23 @@
 
 All notable changes to the **AI Company System** project will be documented in this file.
 
+## [v1.3.0] - 2026-02-13
+### 🌟 Major Features (重大更新)
+- **Project Management System (项目管理系统)**:
+    - **Concept**: Introduced "Project Files" (`Project_...md`) as the central context for multi-agent collaboration.
+    - **Context Awareness**: Agents automatically read the most recent project file (even if created by others) to maintain continuity.
+    - **Smart Name Matching**: Implemented fallback strategies to handle agent name mismatches (e.g., "Xiao Zhang" vs "小张") by looking at recent project activity.
+- **Standalone Image Generation (独立生图)**:
+    - **Robustness**: Fixed JSON parsing to support single-quoted arguments common in LLM outputs.
+    - **Markdown Capture**: Enhanced `main.py` to capture images returned as Markdown tags (`![...](...)`), not just specific strings.
+    - **Local Storage**: Images are automatically downloaded to `Company Doc/{Agent}/assets/` and linked in the generated Markdown file.
+
+### 🛠️ Improvements & Fixes (改进与修复)
+- **Smart Completion**: Relaxed "Short Response" error triggers. Agents are no longer punished for saying "Done" if they have successfully performed a skill (e.g., generated an image).
+- **Loop Prevention**: Enhanced loop detection with context-aware guidance (e.g., "You already read the file, move on").
+- **Asset Persistence**: Fixed bug where generated images were lost if the agent didn't explicitly list them in the final text.
+- **Skill Loader**: Fixed `IndentationError` in `builtins.py` that prevented skills from loading.
+
 ## [v1.2.0] - 2026-02-12
 ### 🌟 Major Features (重大更新)
 - **AI Skill System (技能系统)**:

@@ -71,6 +71,7 @@ class Task(Base):
     input_prompt = Column(Text)
     output_text = Column(Text, nullable=True)
     output_files = Column(JSON, nullable=True)
+    project_file = Column(String, nullable=True) # Link to Project Markdown File
     created_at = Column(DateTime, default=datetime.utcnow)
     finished_at = Column(DateTime, nullable=True)
 

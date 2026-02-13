@@ -30,6 +30,7 @@ graph TD
   - **Task Queue**: `process_task_background` handles long-running generations.
   - **Dispatch Mode**: A specialized LLM mode that forces strict command execution (ignoring chat history).
   - **Mental Sandbox**: Enforces structured analysis (Intent/Entity/Validation) in System Prompts.
+  - **Project Manager** (`project_manager.py`): Handles project file creation, context verification, and task-project linkage.
 
 ### Database (`company_ai.db`)
 - **Schema**:

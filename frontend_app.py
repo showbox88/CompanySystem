@@ -575,17 +575,35 @@ elif page == "High-Level Meeting Room":
                                     elif "[[DELEGATE:" in full_response:
                                         import re
                                         # Use finditer to find ALL delegations
-                                        d_matches = list(re.finditer(r"\[\[DELEGATE:\s*(.*?)\s*\|\s*(.*?)\]\]", full_response, re.DOTALL))
+                                        # Updated regex to capture inner content and split manually for flexibility
+                                        d_matches = list(re.finditer(r"\[\[DELEGATE:\s*(.*?)\]\]", full_response, re.DOTALL))
                                         
                                         if d_matches:
                                             display_text_parts = []
                                             delegate_list = []
                                             
                                             for d_match in d_matches:
-                                                target_name = d_match.group(1).strip()
-                                                instruction = d_match.group(2).strip()
-                                                display_text_parts.append(f"📣 **Delegating to:** `{target_name}`\n> {instruction}")
-                                                delegate_list.append((target_name, instruction))
+                                                content = d_match.group(1).strip()
+                                                parts = [p.strip() for p in content.split("|")]
+                                                
+                                                # Format: Target | [Optional Workflow] | Instruction
+                                                target_name = parts[0]
+                                                workflow_id = None
+                                                instruction = ""
+                                                
+                                                if len(parts) == 2:
+                                                    instruction = parts[1]
+                                                elif len(parts) >= 3:
+                                                    workflow_id = parts[1]
+                                                    instruction = parts[2]
+                                                
+                                                # Display logic
+                                                if workflow_id:
+                                                    display_text_parts.append(f"📣 **Delegating to:** `{target_name}` (Flow: `{workflow_id}`)\n> {instruction}")
+                                                else:
+                                                    display_text_parts.append(f"📣 **Delegating to:** `{target_name}`\n> {instruction}")
+                                                    
+                                                delegate_list.append((target_name, workflow_id, instruction))
                                             
                                             display_text = "\n\n".join(display_text_parts)
                                             message_placeholder.markdown(display_text)
@@ -630,7 +648,7 @@ elif page == "High-Level Meeting Room":
                                                     return a
                                             return None
 
-                                        for target_name, instruction in delegate_match:
+                                        for target_name, workflow_id, instruction in delegate_match:
                                             # Find Target Agent using Helper
                                             target_agent = find_agent_by_name(target_name, current_agents)
                                             
@@ -644,10 +662,14 @@ elif page == "High-Level Meeting Room":
                                                         
                                                         st.write(f"**{target_agent['name']}** - *{status_label}*")
                                                         
-                                                        # Delegate Prompt with FORCED EXECUTION instruction
+                                                        # Delegated Prompt with FORCED EXECUTION instruction
+                                                        final_instruction = instruction
+                                                        if workflow_id:
+                                                            final_instruction = f"[WORKFLOW: {workflow_id}]\n{instruction}"
+                                                            
                                                         delegated_prompt = (
                                                             f"Source: Delegated by {p_agent['name']}.\n"
-                                                            f"Task: {instruction}\n"
+                                                            f"Task: {final_instruction}\n"
                                                             f"CRITICAL: Execute this task acting as YOURSELF ({target_agent['name']}). Do not write about the sender.\n\n"
                                                             "SYSTEM COMMAND: This is a delegated task. "
                                                             "1. If this involves writing/generating a document/code/file, you MUST use the file generation protocol.\n"
