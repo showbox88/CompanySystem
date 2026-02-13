@@ -38,6 +38,8 @@ graph TD
   - `tasks`: Status, Input Prompt, Output File Path.
   - `skills`: Registered capabilities (e.g., `image_generation`, `read_file`).
   - `agent_skills`: Many-to-Many mapping of Agents to Skills.
+  - `handbooks`: Employee manuals and protocols (Database-backed System Prompts).
+  - `agent_handbooks`: Many-to-Many mapping of Agents to Handbooks.
   - `logs`: System events and decisions.
 
 ### Backend Skills (`backend/app/skills/`)

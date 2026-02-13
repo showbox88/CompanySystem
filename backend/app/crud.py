@@ -13,6 +13,21 @@ def get_agents(db: Session, skip: int = 0, limit: int = 100):
 def get_skills(db: Session, skip: int = 0, limit: int = 100):
     return db.query(models.Skill).offset(skip).limit(limit).all()
 
+# --- Handbook CRUD ---
+def get_handbooks(db: Session, skip: int = 0, limit: int = 100):
+    return db.query(models.Handbook).offset(skip).limit(limit).all()
+
+def create_handbook(db: Session, handbook: schemas.HandbookCreate):
+    db_handbook = models.Handbook(
+        id=str(uuid.uuid4()),
+        name=handbook.name,
+        content=handbook.content
+    )
+    db.add(db_handbook)
+    db.commit()
+    db.refresh(db_handbook)
+    return db_handbook
+
 def sync_skills(db: Session, registry_skills: dict):
     """
     Syncs in-memory registered skills to the database.
@@ -47,7 +62,8 @@ def create_agent(db: Session, agent: schemas.AgentCreate):
         system_prompt=agent.system_prompt,
         model_name=agent.model_name,
         temperature=agent.temperature,
-        avatar=agent.avatar
+        avatar=agent.avatar,
+        provider=agent.provider
     )
     db.add(db_agent)
     db.commit()
@@ -61,8 +77,17 @@ def create_agent(db: Session, agent: schemas.AgentCreate):
             if skill:
                  agent_skill = models.AgentSkill(agent_id=db_agent.id, skill_id=skill.id)
                  db.add(agent_skill)
-        db.commit()
-        db.refresh(db_agent)
+    
+    # Handle Handbooks
+    if agent.handbooks:
+        for hb_id in agent.handbooks:
+            handbook = db.query(models.Handbook).filter(models.Handbook.id == hb_id).first()
+            if handbook:
+                agent_hb = models.AgentHandbook(agent_id=db_agent.id, handbook_id=handbook.id)
+                db.add(agent_hb)
+                 
+    db.commit()
+    db.refresh(db_agent)
         
     return db_agent
 
@@ -88,6 +113,21 @@ def update_agent(db: Session, agent_id: str, agent_update: schemas.AgentUpdate):
                 if skill:
                     new_as = models.AgentSkill(agent_id=agent_id, skill_id=sid)
                     db.add(new_as)
+
+    # Handle Handbooks separately if present
+    if "handbooks" in update_data:
+        hb_ids = update_data.pop("handbooks")
+        
+        # 1. Clear existing
+        db.query(models.AgentHandbook).filter(models.AgentHandbook.agent_id == agent_id).delete()
+        
+        # 2. Add new
+        if hb_ids:
+            for hid in hb_ids:
+                hb = db.query(models.Handbook).filter(models.Handbook.id == hid).first()
+                if hb:
+                    new_ah = models.AgentHandbook(agent_id=agent_id, handbook_id=hid)
+                    db.add(new_ah)
         
     for key, value in update_data.items():
         setattr(db_agent, key, value)

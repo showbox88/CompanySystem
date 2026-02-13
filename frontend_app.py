@@ -92,13 +92,25 @@ def get_skills():
         return []
     return []
 
+# Helper for Handbooks
+@st.cache_data(ttl=60)
+def get_handbooks():
+    try:
+        response = requests.get(f"{API_URL}/handbooks/")
+        if response.status_code == 200:
+            return response.json()
+    except:
+        return []
+    return []
+
 # Clear cache when we make changes (Create/Delete)
 def clear_cache():
     get_agents.clear()
     get_tasks.clear()
     get_skills.clear()
+    get_handbooks.clear()
 
-def create_agent(name, role, system_prompt, job_title="", department="", level="", skills=[]):
+def create_agent(name, role, system_prompt, job_title="", department="", level="", skills=[], handbooks=[], provider="openai", model_name="gpt-4-turbo"):
     payload = {
         "name": name,
         "role": role,
@@ -106,16 +118,22 @@ def create_agent(name, role, system_prompt, job_title="", department="", level="
         "department": department,
         "level": level,
         "system_prompt": system_prompt,
-        "model_name": "gpt-4-turbo",
+        "provider": provider,
+        "model_name": model_name,
         "temperature": 0.7,
-        "skills": skills
+        "skills": skills,
+        "handbooks": handbooks
     }
     res = make_request("POST", "/agents/", json=payload)
     if res and res.status_code == 200:
         clear_cache() # Force refresh
     return res
 
-def update_agent_details(agent_id, name, role, system_prompt, job_title, department, level, skills=None):
+# ... (update the UI form)
+# [Step 2: Update the UI Form inside Agent Center]
+
+
+def update_agent_details(agent_id, name, role, system_prompt, job_title, department, level, skills=None, handbooks=None, provider=None, model_name=None):
     payload = {
         "name": name,
         "role": role,
@@ -126,6 +144,12 @@ def update_agent_details(agent_id, name, role, system_prompt, job_title, departm
     }
     if skills is not None:
         payload["skills"] = skills
+    if handbooks is not None:
+        payload["handbooks"] = handbooks
+    if provider:
+        payload["provider"] = provider
+    if model_name:
+        payload["model_name"] = model_name
         
     res = make_request("PUT", f"/agents/{agent_id}", json=payload)
     if res and res.status_code == 200:
@@ -216,10 +240,23 @@ if page == "Agent Center":
             with c3:
                 new_level = st.selectbox("Level", LEVEL_OPTIONS, index=0)
 
+            c4, c5 = st.columns(2)
+            with c4:
+                new_provider = st.selectbox("LLM Provider", ["openai", "gemini"], index=0)
+            with c5:
+                # Default to Flash models (Faster/Cheaper/More likely to be free-tier compatible)
+                default_model = "gpt-4o" if new_provider == "openai" else "gemini-1.5-flash"
+                new_model = st.text_input("Model Name", value=default_model, help="e.g. gpt-4o, gemini-1.5-flash, gemini-2.0-flash-exp")
+
             # Skills Selection
             all_skills = get_skills()
             skill_options = {s['display_name']: s['id'] for s in all_skills}
             selected_skill_names = st.multiselect("Assign Skills", options=list(skill_options.keys()))
+
+            # Handbook Selection
+            all_handbooks = get_handbooks()
+            hb_options = {h['name']: h['id'] for h in all_handbooks}
+            selected_hb_names = st.multiselect("Assign Handbooks", options=list(hb_options.keys()))
             
             new_prompt = st.text_area("System Prompt", placeholder="You are an expert in...", height=150)
             submitted = st.form_submit_button("Create Agent")
@@ -227,7 +264,8 @@ if page == "Agent Center":
             if submitted:
                 if new_name and new_role and new_prompt:
                     selected_skill_ids = [skill_options[n] for n in selected_skill_names]
-                    res = create_agent(new_name, new_role, new_prompt, new_title, new_dept, new_level, selected_skill_ids)
+                    selected_hb_ids = [hb_options[n] for n in selected_hb_names]
+                    res = create_agent(new_name, new_role, new_prompt, new_title, new_dept, new_level, selected_skill_ids, selected_hb_ids, new_provider, new_model)
                     if res and res.status_code == 200:
                         st.success("Agent Created Successfully!")
                         st.rerun()  # Refresh the page
@@ -285,6 +323,16 @@ if page == "Agent Center":
                                     idx = LEVEL_OPTIONS.index(current_level)
                                 e_level = st.selectbox("Level", LEVEL_OPTIONS, index=idx)
                                 
+                            c4, c5 = st.columns(2)
+                            with c4:
+                                current_provider = agent.get('provider', 'openai')
+                                provider_idx = 0
+                                if current_provider in ["openai", "gemini"]:
+                                    provider_idx = ["openai", "gemini"].index(current_provider)
+                                e_provider = st.selectbox("LLM Provider", ["openai", "gemini"], index=provider_idx)
+                            with c5:
+                                e_model = st.text_input("Model Name", value=agent.get('model_name', 'gemini-1.5-flash' if agent.get('provider') == 'gemini' else 'gpt-4o'))
+                                
                             # Skills Edit
                             all_skills = get_skills()
                             skill_options = {s['display_name']: s['id'] for s in all_skills}
@@ -295,12 +343,24 @@ if page == "Agent Center":
                             
                             e_skill_names = st.multiselect("Skills", options=list(skill_options.keys()), default=default_skill_names)
 
+                            # Handbooks Edit
+                            all_handbooks = get_handbooks()
+                            hb_options = {h['name']: h['id'] for h in all_handbooks}
+                            
+                            # Pre-select
+                            # Note: Backend returns 'handbooks' list in agent details if updated schema is used
+                            current_hbs = agent.get('handbooks', [])
+                            default_hb_names = [h['name'] for h in current_hbs if h['name'] in hb_options]
+                            
+                            e_hb_names = st.multiselect("Handbooks", options=list(hb_options.keys()), default=default_hb_names)
+
                             e_prompt = st.text_area("System Prompt", value=agent['system_prompt'], height=150)
                             
                             saved = st.form_submit_button("Save Changes")
                             if saved:
                                 e_skill_ids = [skill_options[n] for n in e_skill_names]
-                                res = update_agent_details(agent['id'], e_name, e_role, e_prompt, e_title, e_dept, e_level, e_skill_ids)
+                                e_hb_ids = [hb_options[n] for n in e_hb_names]
+                                res = update_agent_details(agent['id'], e_name, e_role, e_prompt, e_title, e_dept, e_level, e_skill_ids, e_hb_ids, e_provider, e_model)
                                 if res:
                                     st.success("Updated!")
                                     st.session_state[f"edit_mode_{agent['id']}"] = False
@@ -744,15 +804,20 @@ elif page == "Settings":
         if not current_base_url:
             current_base_url = "https://api.openai.com/v1"
             
-        api_key = st.text_input("API Key", value=current_api_key, type="password")
-        base_url = st.text_input("Base URL", value=current_base_url, help="https://api.openai.com/v1 or https://api.deepseek.com/v1")
+        api_key = st.text_input("OpenAI API Key", value=current_api_key, type="password")
+        base_url = st.text_input("OpenAI Base URL", value=current_base_url, help="https://api.openai.com/v1 or https://api.deepseek.com/v1")
+        
+        st.divider()
+        current_gemini_key = get_setting("gemini_api_key")
+        gemini_api_key = st.text_input("Gemini API Key", value=current_gemini_key, type="password", help="Required if using Gemini Provider")
         
         submitted = st.form_submit_button("Save Settings")
         
         if submitted:
             s1 = save_setting("api_key", api_key)
             s2 = save_setting("base_url", base_url)
-            if s1 and s2:
+            s3 = save_setting("gemini_api_key", gemini_api_key)
+            if s1 and s2 and s3:
                 st.success("Settings Saved!")
             else:
                 st.error("Failed to save settings.")

@@ -177,6 +177,12 @@ class SkillDispatcher:
         
         # Inject Agent Identity for file saving
         merged_config['agent_name'] = self.agent.name
+        merged_config['agent_provider'] = getattr(self.agent, 'provider', 'openai')
+        
+        # Inject Gemini Key if available (it might be in global_config, but let's ensure it's accessible)
+        # global_config in main.py usually comes from get_llm_config which HAS gemini_api_key.
+        # So we just rely on global_config having it.
+
         
         agent_skill_config = self.available_skills[skill_name]['config']
         if agent_skill_config:

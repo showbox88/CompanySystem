@@ -2,6 +2,21 @@
 
 All notable changes to the **AI Company System** project will be documented in this file.
 
+## [v1.4.0] - 2026-02-13
+### 🌟 Major Features (重大更新)
+- **Employee Handbook System (员工手册系统)**:
+    - **Database-Driven Prompts**: Replaced hardcoded system instructions with dynamic `Handbooks` stored in the database.
+    - **Flexible Assignment**: Agents can now be assigned multiple Handbooks (e.g., "General Conduct" + "Secretary Manual") via the UI.
+    - **Role-Specific Logic**: Handbooks for "Secretary", "Background Worker", and "File Generation" are automatically injected based on context.
+    - **Migration Script**: Added `scripts/migrate_handbooks.py` to auto-seed default Chinese handbooks.
+
+### 🐛 Bug Fixes (修复)
+- **Gemini Integration**:
+    - **Provider Fix**: Corrected `provider` mismatch for agents (e.g., 'Xiao Zhi') causing 404 errors.
+    - **History Handling**: Fixed `AttributeError: 'dict' object has no attribute 'role'` when processing chat history during retries.
+    - **Generator Consumption**: Fixed `TypeError` when `call_llm_service` returned a generator object instead of a string in non-streaming mode.
+    - **Image Gen Billing**: Verified and documented that Gemini Imagen 3/4 requires Google Cloud Billing; added fallback guidance to OpenAI.
+
 ## [v1.3.0] - 2026-02-13
 ### 🌟 Major Features (重大更新)
 - **Project Management System (项目管理系统)**:

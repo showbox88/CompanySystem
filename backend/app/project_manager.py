@@ -6,7 +6,7 @@ PROJECTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.p
 if not os.path.exists(PROJECTS_DIR):
     os.makedirs(PROJECTS_DIR)
 
-def create_project_file(title: str, steps: list[str]) -> str:
+def create_project_file(title: str, steps: list[str], is_sequential: bool = True) -> str:
     """Creates a new project markdow file. Returns the absolute path."""
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"Project_{timestamp}_{title.replace(' ', '_')}.md"
@@ -15,6 +15,11 @@ def create_project_file(title: str, steps: list[str]) -> str:
     content = f"# Project: {title}\n"
     content += f"**Created**: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
     content += f"**Status**: IN_PROGRESS\n\n"
+    
+    # Metadata for Execution Mode
+    box = "[x]" if is_sequential else "[ ]"
+    content += f"{box} Sequential Execution (Strict Order)\n\n"
+    
     content += "## Execution Plan (Checklist)\n"
     
     for step in steps:
@@ -49,16 +54,38 @@ def mark_step_completed(filepath: str, step_content_part: str):
             
     return found
 
-def get_next_pending_step(filepath: str):
-    """Returns the first execution step that is still [ ]."""
+def get_pending_steps(filepath: str) -> list[str]:
+    """
+    Returns a list of pending steps to execute NEXT.
+    - If [x] Sequential: Returns ONLY the first pending step.
+    - If [ ] Sequential: Returns ALL pending steps.
+    """
     if not os.path.exists(filepath):
-        return None
+        return []
         
     with open(filepath, "r", encoding="utf-8") as f:
         lines = f.readlines()
         
+    # Check Mode
+    is_sequential = True # Default
+    for line in lines:
+        if "Sequential Execution" in line:
+            if "[ ]" in line:
+                is_sequential = False
+            break
+            
+    pending_steps = []
     for line in lines:
         if line.strip().startswith("- [ ]"):
-            return line.strip().replace("- [ ]", "").strip()
+            step = line.strip().replace("- [ ]", "").strip()
+            pending_steps.append(step)
             
-    return None # All done
+            if is_sequential:
+                return [step] # Return immediately if sequential
+                
+    return pending_steps 
+
+def get_next_pending_step(filepath: str):
+    """Legacy wrapper for compatibility."""
+    steps = get_pending_steps(filepath)
+    return steps[0] if steps else None

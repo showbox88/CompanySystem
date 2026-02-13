@@ -35,7 +35,11 @@
 4.  **Multi-Turn Engine (多步思考引擎)**:
     *   支持 Agent 进行 "Read -> Think -> Act" 的多步操作（例如：先读文档，再根据内容画图）。
     *   自动注入 "Recent Company Logs"，实现 Agent 间的信息共享。
-5.  **Zero-Shot Dispatch**: 强制执行模式，消除聊天历史干扰。
+5.  **Employee Handbook System (员工手册系统)**:
+    *   **Dynamic Protocols**: 通过数据库动态管理员工的行为准则 (Handbooks)。
+    *   **Modular**: 支持为不同员工灵活组合多本手册 (e.g., "基础规范" + "秘书手册")。
+    *   **Zero-Hardcode**: 全面移除后台硬编码提示词，支持全中文配置。
+6.  **Zero-Shot Dispatch**: 强制执行模式，消除聊天历史干扰。
 
 ## 🚀 快速开始
 

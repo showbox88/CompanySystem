@@ -20,6 +20,7 @@ class AgentBase(BaseModel):
     description: Optional[str] = None
     system_prompt: str
     model_name: str = "gpt-4-turbo"
+    provider: str = "openai"
     temperature: float = 0.7
     avatar: Optional[str] = None
 
@@ -38,9 +39,24 @@ class SettingBase(BaseModel):
     key: str
     value: str
 
+class HandbookBase(BaseModel):
+    name: str
+    content: str
+
+class HandbookCreate(HandbookBase):
+    pass
+
+class Handbook(HandbookBase):
+    id: str
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
 # --- Creation Models (Input) ---
 class AgentCreate(AgentBase):
     skills: Optional[List[str]] = [] # List of Skill IDs
+    handbooks: Optional[List[str]] = [] # List of Handbook IDs
 
 class AgentUpdate(BaseModel):
     name: Optional[str] = None
@@ -51,9 +67,11 @@ class AgentUpdate(BaseModel):
     description: Optional[str] = None
     system_prompt: Optional[str] = None
     model_name: Optional[str] = None
+    provider: Optional[str] = None
     temperature: Optional[float] = None
     avatar: Optional[str] = None
     skills: Optional[List[str]] = None # List of Skill IDs to Replace existing
+    handbooks: Optional[List[str]] = None # List of Handbook IDs
 
 class SkillCreate(SkillBase):
     pass
@@ -88,7 +106,10 @@ class Skill(SkillBase):
 class Agent(AgentBase):
     id: str
     created_at: datetime
+    id: str
+    created_at: datetime
     skills: List[Skill] = []
+    handbooks: List[Handbook] = []
 
     class Config:
         from_attributes = True

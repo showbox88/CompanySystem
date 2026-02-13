@@ -39,6 +39,7 @@ class Agent(Base):
     description = Column(Text, nullable=True)
     system_prompt = Column(Text)
     model_name = Column(String, default="gpt-4-turbo")
+    provider = Column(String, default="openai") # openai, gemini, etc.
     temperature = Column(Float, default=0.7)
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -46,8 +47,12 @@ class Agent(Base):
     tasks = relationship("Task", back_populates="agent")
     logs = relationship("SystemLog", back_populates="agent")
     agent_skills = relationship("AgentSkill", back_populates="agent", cascade="all, delete-orphan")
-    # Proxy to access skills directly
-    # skills = association_proxy("agent_skills", "skill") 
+    
+    # Expose skills directly for Pydantic serialization
+    skills = relationship("Skill", secondary="agent_skills", viewonly=True)
+    
+    agent_handbooks = relationship("AgentHandbook", back_populates="agent", cascade="all, delete-orphan")
+    handbooks = relationship("Handbook", secondary="agent_handbooks", viewonly=True) 
 
 class Skill(Base):
     __tablename__ = "skills"
@@ -60,6 +65,26 @@ class Skill(Base):
 
     # Relationships
     skill_agents = relationship("AgentSkill", back_populates="skill")
+
+# --- Employee Handbooks ---
+class AgentHandbook(Base):
+    __tablename__ = 'agent_handbooks'
+    
+    agent_id = Column(String, ForeignKey('agents.id'), primary_key=True)
+    handbook_id = Column(String, ForeignKey('handbooks.id'), primary_key=True)
+    
+    agent = relationship("Agent", back_populates="agent_handbooks")
+    handbook = relationship("Handbook", back_populates="handbook_agents")
+
+class Handbook(Base):
+    __tablename__ = "handbooks"
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    name = Column(String, index=True, unique=True)
+    content = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    handbook_agents = relationship("AgentHandbook", back_populates="handbook")
 
 class Task(Base):
     __tablename__ = "tasks"

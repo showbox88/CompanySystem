@@ -38,12 +38,159 @@ def startup_event():
 def get_llm_config(db: Session):
     api_key = crud.get_setting(db, "api_key")
     base_url = crud.get_setting(db, "base_url")
+    gemini_api_key = crud.get_setting(db, "gemini_api_key")
     return {
         "api_key": api_key.value if api_key else None,
-        "base_url": base_url.value if base_url else "https://api.openai.com/v1"
+        "base_url": base_url.value if base_url else "https://api.openai.com/v1",
+        "gemini_api_key": gemini_api_key.value if gemini_api_key else None
     }
 
+def call_gemini_service(agent: models.Agent, prompt: str, config: dict, stream: bool = False, history: List[schemas.ChatMessage] = [], system_prompt: str = ""):
+    api_key = config.get("gemini_api_key")
+    if not api_key:
+        return "Error: Gemini API Key not configured."
+    
+    import requests
+    import json
+
+    model_name = agent.model_name or "gemini-1.5-pro"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+    
+    # Construct Gemini Content
+    # Gemini uses "user" and "model" roles
+    contents = []
+    
+    # 1. System Prompt (Hack: Prepend to first user message or use system_instruction if available in v1beta/1.5)
+    # Ideally v1beta supports system_instruction, let's try strict formatting first.
+    # For now, we prepend system prompt to the first user message context
+    
+    current_context = system_prompt + "\n\n"
+    
+    # 2. History
+    # 2. History
+    for msg in history:
+        # Handle both Pydantic models (msg.role) and Dicts (msg['role'])
+        if isinstance(msg, dict):
+            role_val = msg.get("role")
+            content_val = msg.get("content")
+        else:
+            role_val = msg.role
+            content_val = msg.content
+            
+        role = "user" if role_val == "user" else "model"
+        # Combine with current context if it's the very first message
+        part_text = content_val
+        if current_context:
+            part_text = current_context + str(part_text)
+            current_context = "" # Consumed
+            
+        contents.append({
+            "role": role,
+            "parts": [{"text": str(part_text)}]
+        })
+    
+    # 3. Current Prompt
+    final_prompt_text = prompt
+    if current_context:
+        final_prompt_text = current_context + final_prompt_text
+        
+    contents.append({
+        "role": "user",
+        "parts": [{"text": final_prompt_text}]
+    })
+
+    payload = {
+        "contents": contents,
+        "generationConfig": {
+            "temperature": agent.temperature,
+            "maxOutputTokens": 8192
+        }
+    }
+    
+    if stream:
+        # Stream implementation
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:streamGenerateContent?key={api_key}"
+        try:
+             # Use requests with stream=True
+            with requests.post(url, json=payload, stream=True) as response:
+                if response.status_code != 200:
+                    yield f"Error: {response.status_code} - {response.text}"
+                    return
+
+                # Gemini streams a JSON array of partial objects, but slightly complex to parse raw.
+                # However, the REST API returns "server-sent events" style or just a long JSON list?
+                # Actually v1beta streamGenerateContent returns a stream of JSON objects.
+                # Let's try simple line processing.
+                for line in response.iter_lines():
+                    if line:
+                        decoded_line = line.decode('utf-8')
+                        # Remove "data: " prefix if present (SSE) but Gemini usually sends raw JSON list items
+                        if decoded_line.startswith(','): decoded_line = decoded_line[1:] # in case of array
+                        if decoded_line.strip() == '[': continue
+                        if decoded_line.strip() == ']': continue
+                        
+                        try:
+                            # It might be a full JSON object per chunk
+                            chunk_data = json.loads(decoded_line)
+                            if "candidates" in chunk_data:
+                                content_part = chunk_data["candidates"][0]["content"]["parts"][0]["text"]
+                                yield content_part
+                        except:
+                            pass
+        except Exception as e:
+            yield f"Error calling Gemini: {str(e)}"
+
+    else:
+        # Non-stream implementation
+        try:
+            response = requests.post(url, json=payload)
+            if response.status_code == 200:
+                data = response.json()
+                if "candidates" in data:
+                     return data["candidates"][0]["content"]["parts"][0]["text"]
+                return "Error: No candidates returned."
+            else:
+                return f"Error: {response.status_code} - {response.text}"
+        except Exception as e:
+            return f"Error calling Gemini: {str(e)}"
+
+
 def call_llm_service(agent: models.Agent, prompt: str, config: dict, stream: bool = False, db: Session = None, history: List[schemas.ChatMessage] = [], task_mode: str = "chat"):
+    # Dispatch based on Provider
+    if agent.provider == "gemini":
+        # Pre-calculate system prompt to pass explicitly
+        identity_prompt = (
+            f"You are {agent.name}.\n"
+            f"Role: {agent.role}\n"
+            f"Job Title: {agent.job_title or 'N/A'}\n"
+            f"Department: {agent.department or 'N/A'}\n"
+            f"Level: {agent.level or 'N/A'}\n\n"
+            f"{agent.system_prompt}"
+        )
+        # Inject logs
+        BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        LOG_FILE = os.path.join(BASE_DIR, "Company Doc", "System", "Company_Log.md")
+        if os.path.exists(LOG_FILE):
+             try:
+                with open(LOG_FILE, "r", encoding="utf-8") as f:
+                    recent_lines = f.readlines()[-50:]
+                    log_text = "".join(recent_lines)
+                    identity_prompt += f"\n\n[Recent Company System Activity]\n{log_text}\n"
+             except: pass
+        
+        # Inject Delegation or Dispatch instructions if needed
+        # (This logic is duplicated from below but needed for proper system prompt construction)
+        # For brevity, we pass the raw system prompt construction to the helper
+        
+        result = call_gemini_service(agent, prompt, config, stream, history, system_prompt=identity_prompt)
+        
+        # FIX: If not streaming, consume the generator immediately and return string
+        if not stream:
+            return "".join([chunk for chunk in result])
+            
+        return result
+        
+    # Default to OpenAI
     api_key = config.get("api_key")
     base_url = config.get("base_url", "https://api.openai.com/v1")
     import requests
@@ -61,7 +208,7 @@ def call_llm_service(agent: models.Agent, prompt: str, config: dict, stream: boo
         "Content-Type": "application/json"
     }
     
-    # Construct Identity Context
+    # Construct Identity Context (OpenAI)
     identity_prompt = (
         f"You are {agent.name}.\n"
         f"Role: {agent.role}\n"
@@ -103,48 +250,54 @@ def call_llm_service(agent: models.Agent, prompt: str, config: dict, stream: boo
         identity_prompt += (
             f"\n\n[Company Directory Data]\n{table_header}{table_rows}\n(You have access to the full employee list.)"
             f"\n\n{get_all_workflows_prompt()}"
-            "\n\n[INSTRUCTION: COMMAND ANALYSIS PROTOCOL]\n"
-            "You are a Scheduler/Dispatcher. To ensure accuracy, you MUST follow this 2-step process for EVERY user message:\n"
+            f"\n\n[INSTRUCTION: COMMAND ANALYSIS PROTOCOL]\n"
+            "你是公司的调度员/秘书。为了确保准确性，你必须对接下来的每一条用户指令执行以下 2 步流程：\n"
             "\n"
-            "### STEP 1: ANALYZE (Mental Sandbox)\n"
-            "Before deciding to delegate or answer, output a Markdown table analyzing the request:\n"
-            "| Field | Value |\n"
+            "### 第一步：分析 (思维沙盒)\n"
+            "在决定如何行动之前，先输出一个 Markdown 表格进行分析：\n"
+            "| 字段 | 值 |\n"
             "|---|---|\n"
-            "| **User Intent** | (QUERY / COMMAND / CHAT / PROJECT_PLAN) |\n"
-            "| **Key Entities** | (Who is mentioned?) |\n"
-            "| **Command Type** | (e.g. Write File, Answer Question, Assign Task, Plan Project) |\n"
-            "| **Workflow ID** | (Select best fit from AVAILABLE WORKFLOWS, default 'general_task') |\n"
-            "| **Valid Target?** | (Check Directory Pattern Matching: Yes/No) |\n"
+            "| **用户意图** | (查询 / 指令 / 闲聊 / 项目计划) |\n"
+            "| **关键实体** | (提到了谁？) |\n"
+            "| **指令类型** | (例如：写文件, 回答问题, 分派任务, 制定计划) |\n"
+            "| **工作流ID** | (从可用工作流中选择最匹配的，默认 'general_task') |\n"
+            "| **目标是否存在?** | (检查公司目录是否匹配: 是/否) |\n"
             "\n"
-            "### STEP 2: ACT\n"
-            "Based on the table above:\n"
-            "1. **IF INTENT = QUERY/CHAT** -> Answer directly.\n"
-            "2. **IF INTENT = PROJECT_PLAN (Complex/Sequential Goal)**:\n"
-            "   - TRIGGER: User uses words like 'First... Then...', 'After...', 'Based on...', '先...后...', '然后...'\n"
-            "   - TRIGGER: Tasks have dependencies (Task B needs Task A's output).\n"
-            "   - Break down the goal into a sequential checklist.\n"
-            "   - OUTPUT: [[CREATE_PROJECT: {Title} | {Step 1} | {Step 2} ...]]\n"
-            "   - STEP FORMAT: 'AgentName: Instruction' (e.g. 'Xiao Zhang: Write script')\n"
-            "   - EXAMPLE: [[CREATE_PROJECT: SciFi_Comic | Xiao Zhang: Write script | Xiao Mei: Draw content based on script]]\n"
-            "3. **IF INTENT = COMMAND (Single/Parallel Task)**:\n"
-            "   - TRIGGER: Independent tasks that can run at the same time.\n"
-            "   - Identify ALL targets.\n"
-            "   - Identify ALL targets.\n"
-            "   - **CRITICAL**: The Target Name MUST match the 'Name' column in the [Company Directory Data] EXACTLY.\n"
-            "   - DO NOT translate names (e.g. if directory says '小张', DO NOT output 'Xiao Zhang').\n"
-            "   - **CRITICAL**: DO NOT TRANSLATE THE INSTRUCTION.\n"
-            "   - OUTPUT THE DELEGATION TAGS, ONE PER LINE.\n"
-            "   - TAG FORMAT: [[DELEGATE: {Exact Target Name} | {Workflow ID} | {Original Instruction}]]\n"
-            "   - EXAMPLE: \n"
+            "### 第二步：行动\n"
+            "根据上表分析结果：\n"
+            "1. **如果意图 = 查询/闲聊** -> 直接回答。\n"
+            "2. **如果意图 = 项目计划 (复杂/多步骤目标)**:\n"
+            "   - 触发条件：用户使用了“先...后...”、“然后”、“基于...”、“First... Then...”等词。\n"
+            "   - 触发条件：任务之间存在依赖关系（任务B需要任务A的产出）。\n"
+            "   - 将目标分解为顺序执行的检查清单。\n"
+            "   - **强制规则**：如果用户要求“写提示词/文案” **和** “生成图片”：\n"
+            "     - 步骤 1: 写提示词/文案 (内容型员工)。\n"
+            "     - 步骤 2: 根据步骤1生成图片 (视觉型员工)。\n"
+            "     - **绝对禁止**在写好提示词之前就去画图。\n"
+            "   - **判定模式**：串行 (默认) 还是 并行?\n"
+            "     - 如果用户说“同时”、“一起”、“并发” -> 串行: False\n"
+            "     - 否则 -> 串行: True\n"
+            "   - **输出格式**: [[CREATE_PROJECT: {项目标题} | {是否串行(True/False)} | {步骤1} | {步骤2} ...]]\n"
+            "   - **步骤格式**: '员工姓名: 具体指令' (例如 '小张: 写最后一段脚本')\n"
+            "   - **示例**: [[CREATE_PROJECT: 科幻漫画项目 | True | 小张: 编写脚本 | 小美: 根据脚本绘制分镜]]\n"
+            "\n"
+            "3. **如果意图 = 指令 (单任务/并行任务)**:\n"
+            "   - 触发条件：独立的任务，可以立即执行。\n"
+            "   - 识别所有目标员工。\n"
+            "   - **严重警告**：目标姓名必须与 [Company Directory Data] 中的 'Name' 列 **完全一致**。\n"
+            "   - **绝对禁止**翻译名字 (例如：如果目录里是 '小张'，绝不要输出 'Xiao Zhang')。\n"
+            "   - **绝对禁止**翻译指令内容，保持原意。\n"
+            "   - 输出分派标签，每行一个。\n"
+            "   - **标签格式**: [[DELEGATE: {准确的员工姓名} | {工作流ID} | {原始指令}]]\n"
+            "   - **示例**: \n"
             "     [[DELEGATE: 小张 | content_creation | 写一份日报]]\n"
-            "     [[DELEGATE: 小美 | visual_design | Draw a sci-fi bike]]\n"
+            "     [[DELEGATE: 小美 | visual_design | 画一辆科幻自行车]]\n"
         )
     # Inject Thinking Protocol (Cognitive Architecture)
     from .thoughts.engine import ThinkingEngine
     identity_prompt += ThinkingEngine.enrich_system_prompt(agent, db, context={"task_mode": task_mode})
 
     # 3. Task Mode Instructions
-
     # 3. Task Mode Instructions
     
     
@@ -528,12 +681,12 @@ def process_task_background(task_id: str):
                 # [IMAGE OUTPUT CAPTURE]
                 skill_res_str = str(skill_result)
                 
-                # DEBUG LOGGING
+                # DEBUG LOGGING (Commented out to reduce noise in System Log)
                 print(f"DEBUG: Skill Execution Result: {skill_res_str}")
-                try:
-                    crud.create_log(db, "SKILL_DEBUG", f"Agent {agent.name} executed {tag_string}. Result: {skill_res_str[:200]}...", agent_id=agent.id)
-                except:
-                    pass
+                # try:
+                #     crud.create_log(db, "SKILL_DEBUG", f"Agent {agent.name} executed {tag_string}. Result: {skill_res_str[:200]}...", agent_id=agent.id)
+                # except:
+                #     pass
 
                 if "image_generation" in tag_string:
                     # 1. Check for explicit path format "Image generated at: ..."
@@ -636,42 +789,44 @@ def process_task_background(task_id: str):
             # Since we generated the task FROM the step text, it should match.
             project_manager.mark_step_completed(task.project_file, task.input_prompt[:50]) # Match first 50 chars
             
-            # 2. Get Next Step
-            next_step = project_manager.get_next_pending_step(task.project_file)
+            # 2. Get Next Step(s)
+            next_steps = project_manager.get_pending_steps(task.project_file) # Returns list (1 or many)
             
-            if next_step:
-                print(f"DEBUG: Found Next Project Step: {next_step}")
+            if next_steps:
+                print(f"DEBUG: Found {len(next_steps)} Next Project Steps.")
                 
-                # Parse "Agent: Instruction"
-                if ":" in next_step:
-                    target_name, instruction = next_step.split(":", 1)
-                    target_name = target_name.strip()
-                    instruction = instruction.strip()
-                    
-                    # Find Agent
-                    target_agent = db.query(models.Agent).filter(models.Agent.name.contains(target_name)).first()
-                    if target_agent:
-                        # Create Next Task
-                        new_task = schemas.TaskCreate(
-                            title=f"Project Task: {target_name}",
-                            input_prompt=instruction,
-                            agent_id=target_agent.id,
-                            project_file=task.project_file # Pass the baton
-                        )
+                # Iterate and spawn parallel if needed
+                import threading
+
+                for step_str in next_steps:
+                    # Parse "Agent: Instruction"
+                    if ":" in step_str:
+                        target_name, instruction = step_str.split(":", 1)
+                        target_name = target_name.strip()
+                        instruction = instruction.strip()
                         
-                        next_task = crud.create_task(db, new_task)
-                        
-                        # Log to Company Log so Secretary knows
-                        crud.create_log(db, "PROJECT_UPDATE", f"Step completed. Auto-starting next step for {target_name}: {instruction}", agent_id="System")
-                        
-                        # Recursive Call? No, separate thread/process to avoid stack depth
-                        # In FastAPI BackgroundTasks, we can't easily add more.
-                        # But we are in a thread. We can spawn another.
-                        import threading
-                        t = threading.Thread(target=process_task_background, args=(next_task.id,))
-                        t.start()
-                    else:
-                        crud.create_log(db, "PROJECT_ERROR", f"Could not find agent '{target_name}' for next step.", agent_id="System")
+                        # Find Agent
+                        target_agent = db.query(models.Agent).filter(models.Agent.name.contains(target_name)).first()
+                        if target_agent:
+                            # Create Next Task
+                            new_task = schemas.TaskCreate(
+                                title=f"Project Task: {target_name}",
+                                input_prompt=instruction,
+                                agent_id=target_agent.id,
+                                project_file=task.project_file 
+                            )
+                            
+                            next_task_obj = crud.create_task(db, new_task)
+                            
+                            # Log to Company Log
+                            crud.create_log(db, "PROJECT_UPDATE", f"Step completed. Auto-starting next step for {target_name}: {instruction}", agent_id="System")
+                            
+                            # Spawn Thread
+                            t = threading.Thread(target=process_task_background, args=(next_task_obj.id,))
+                            t.start()
+                            print(f"DEBUG: Spawned thread for task {next_task_obj.id}")
+                        else:
+                            crud.create_log(db, "PROJECT_ERROR", f"Could not find agent '{target_name}' for next step.", agent_id="System")
             else:
                 print("DEBUG: Project Execution Complete!")
                 crud.create_log(db, "PROJECT_COMPLETE", f"All steps in {os.path.basename(task.project_file)} are done.", agent_id="System")
@@ -726,6 +881,15 @@ def update_agent(agent_id: str, agent_update: schemas.AgentUpdate, db: Session =
 @app.delete("/agents/{agent_id}")
 def delete_agent(agent_id: str, db: Session = Depends(get_db)):
     return crud.delete_agent(db=db, agent_id=agent_id)
+
+# --- Handbook Endpoints ---
+@app.post("/handbooks/", response_model=schemas.Handbook)
+def create_handbook(handbook: schemas.HandbookCreate, db: Session = Depends(get_db)):
+    return crud.create_handbook(db=db, handbook=handbook)
+
+@app.get("/handbooks/", response_model=List[schemas.Handbook])
+def read_handbooks(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+    return crud.get_handbooks(db, skip=skip, limit=limit)
 
 # --- Chat Endpoints ---
 @app.post("/chat/")
@@ -805,11 +969,28 @@ def chat_with_agent(chat_request: schemas.ChatRequest, db: Session = Depends(get
                     parts = [p.strip() for p in content.split("|")]
                     if len(parts) >= 2:
                         title = parts[0]
-                        steps = parts[1:]
                         
+                        # Check 2nd arg for boolean
+                        raw_seq = parts[1].lower()
+                        if raw_seq in ["true", "yes", "sequential"]:
+                            is_seq = True
+                            steps = parts[2:]
+                        elif raw_seq in ["false", "no", "parallel"]:
+                            is_seq = False
+                            steps = parts[2:]
+                        else:
+                            # Backward compatibility or implicit True
+                            is_seq = True 
+                            # If parts[1] looks like a step (contains ":"), assume True and start steps from index 1
+                            if ":" in parts[1]:
+                                steps = parts[1:]
+                            else:
+                                steps = parts[2:] # Maybe just a title and weird arg
+
                         # 1. Create File
-                        proj_path = project_manager.create_project_file(title, steps)
-                        yield f"\n\n🚀 **Project Created**: `{os.path.basename(proj_path)}`\n"
+                        proj_path = project_manager.create_project_file(title, steps, is_sequential=is_seq)  
+                        mode_str = "Strict Sequential" if is_seq else "Parallel Execution"
+                        yield f"\n\n🚀 **Project Created**: `{os.path.basename(proj_path)}` ({mode_str})\n"
                         
                         # 2. Get Next Step
                         next_step = project_manager.get_next_pending_step(proj_path)
